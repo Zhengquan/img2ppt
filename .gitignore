@@ -1,0 +1,19 @@
+# 环境与密钥（勿提交）
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 输出与临时
+*.pptx
+*.pdf
+*.log
+.DS_Store
+*.png

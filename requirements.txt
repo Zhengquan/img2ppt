@@ -1,0 +1,23 @@
+# 图片/PDF 转 PPT 流水线依赖
+# OCR 使用百度云端高精度含位置版，无需本地 PaddleOCR
+
+# 云端 OCR 与配置
+requests>=2.28.0
+python-dotenv>=1.0.0
+
+# 去字修补
+simple-lama-inpainting>=0.1.2
+torch
+torchvision
+
+# 图像与 PDF
+Pillow>=9.5.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+PyMuPDF>=1.23.0
+
+# PPT 导出
+python-pptx>=0.6.21
+
+# 进度条
+tqdm>=4.65.0
