@@ -50,17 +50,22 @@ def _progress_callback_with_bar():
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="将单张图片或 PDF 转为可编辑 PPT（需先 conda activate LLMs）",
+        description="将单张图片 / 图片目录 / PDF 转为可编辑 PPT（需先 conda activate LLMs）",
     )
     parser.add_argument(
         "--input", "-i",
         required=True,
-        help="输入路径：单张图片（PNG/JPG 等）或 PDF 文件",
+        help="输入路径：单张图片（PNG/JPG 等）/ 图片目录（多张图按文件名排序）/ PDF 文件",
     )
     parser.add_argument(
         "--output", "-o",
-        required=True,
-        help="输出的 .pptx 路径",
+        default=None,
+        help="输出的 .pptx 路径；不指定时，默认与输入同名（单文件）或在目录旁生成同名 .pptx",
+    )
+    parser.add_argument(
+        "--pdf-output",
+        default=None,
+        help="当 --input 为图片目录时，可选输出合并后的 PDF 路径；默认与 ppt 同名 .pdf",
     )
     parser.add_argument(
         "--font-normal",
@@ -81,15 +86,27 @@ def main() -> None:
 
     from src.pipeline import run_pipeline
 
+    input_path = Path(args.input)
+    if args.output:
+        pptx_path = Path(args.output)
+    else:
+        # 单文件：直接改后缀；目录：在同一层目录下生成「目录名.pptx」
+        pptx_path = (
+            input_path.with_suffix(".pptx")
+            if input_path.is_file()
+            else input_path.with_suffix(".pptx")
+        )
+
     print("开始处理…")
     run_pipeline(
-        args.input,
-        args.output,
+        input_path,
+        pptx_path,
         font_normal=args.font_normal,
         font_bold=args.font_bold,
+        pdf_output_path=args.pdf_output,
         progress_callback=None if args.quiet else _progress_callback_with_bar(),
     )
-    print(f"已生成: {args.output}")
+    print(f"已生成: {pptx_path}")
 
 
 if __name__ == "__main__":

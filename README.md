@@ -41,12 +41,13 @@ USE_INPAINTING_FALLBACK=1
 在项目根目录、且已 `conda activate LLMs` 的前提下：
 
 - **单张图片**：`python cli.py --input image.png --output out.pptx`
+- **图片目录**：`python cli.py --input images_dir --output out.pptx`（按文件名排序；会自动合并生成 `out.pdf`，并输出一个 `out.pptx`）
 - **PDF 文件**：`python cli.py --input doc.pdf --output out.pptx`（每页 PDF 对应一页幻灯片）
 - **指定字体**：`python cli.py -i in.png -o out.pptx --font-normal "思源黑体" --font-bold "思源黑体 Bold"`
 
 ## 输入 / 输出
 
-- **输入**：单张图片（PNG/JPG 等）或 PDF 文件
+- **输入**：单张图片（PNG/JPG 等）/ **包含多张图片的目录** / PDF 文件
 - **输出**：仅 PPT 格式（.pptx），每张图或每页 PDF 对应一页幻灯片
 
 ## 流水线概要
