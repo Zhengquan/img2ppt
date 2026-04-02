@@ -16,6 +16,33 @@ description: >-
 - 工作区为**本仓库根目录**（含 `cli.py`、`src/`、`requirements.txt`）
 - 运行环境与 Python 版本由使用者自行配置；依赖安装示例见下。
 
+## 0. 硬性规则（Agent 必读）
+
+本 Skill **依赖云端 OCR 密钥**。在未确认密钥有效之前，**禁止**执行 `python cli.py …`（包括「先跑一遍看报什么错」）。
+
+### 必须先完成的步骤（顺序固定）
+
+1. **检查**仓库根目录是否存在 `.env`，且其中**至少一组** OCR 变量为**真实值**（非空、非 `.env.example` 里的占位符如 `your-api-key` / `your-secret-id` 等）。
+2. 若 `.env` 不存在、为空、或仍为占位符：**停止自动化执行**，向**用户**说明需要腾讯或百度 OCR 凭据，请用户在本 Skill 根目录执行 `cp .env.example .env` 后自行填入，或由用户在对话中提供密钥后由 Agent **仅写入工作区内的 `.env`**（勿写入聊天记录以外的公开位置；勿提交 `.env`）。
+3. **仅在**步骤 1 通过后，再执行 `pip install -r requirements.txt`（若尚未安装）。
+4. **仅在**步骤 1 通过后，再执行 `python cli.py -i … -o …`。
+
+### 禁止行为
+
+- **禁止**在未配置有效密钥时运行 `python cli.py`，以试探错误信息。
+- **禁止**在未配置有效密钥时，用「把图片直接插进 PPT」等方式替代本流水线并声称完成了本 Skill 的「可编辑 OCR 还原」能力（除非用户明确只要嵌入图片）。
+- **禁止**在其它目录或工作区猜测是否存在 `.env`；以**本 Skill 仓库根目录**的 `.env` 为准。
+
+### 如何自检「已配置」
+
+- 根目录存在 `.env`。
+- 下列**至少一组**两个变量均为非占位非空字符串：
+  - 腾讯：`TENCENT_OCR_SECRET_ID` + `TENCENT_OCR_SECRET_KEY`
+  - 百度：`BAIDU_OCR_API_KEY` + `BAIDU_OCR_SECRET_KEY`
+- 若用户同时配置了腾讯与百度，未传 `--ocr-engine` 时默认使用腾讯。
+
+若自检不通过，`cli.py` 会以退出码 `2` 退出并打印配置说明；Agent 仍应先按上文向用户索取密钥，而不是反复空跑命令。
+
 ## 1. 依赖
 
 在仓库根目录执行（具体用哪个 Python / 是否隔离环境由当前 Skill 宿主决定）：
@@ -26,13 +53,15 @@ pip install -r requirements.txt
 
 `requirements.txt` 已指定国内镜像（清华）；境外可用官方源：`pip install -r requirements.txt --index-url https://pypi.org/simple`。
 
+**注意**：安装依赖不要求密钥，但**安装后仍不得在密钥未就绪时运行 `cli.py`**。
+
 ## 2. OCR 配置（至少一种）
 
 默认引擎选择规则：
 
 - 两种都配置：默认腾讯
 - 仅配置一种：使用该引擎
-- 都未配置：运行失败并提示配置缺失
+- 都未配置或仍为占位符：`cli.py` 立即退出（退出码 `2`），须先配置
 
 仓库根目录：`cp .env.example .env`，至少填写以下任一组：
 

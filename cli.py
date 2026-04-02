@@ -91,7 +91,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from src.pipeline import run_pipeline
-    from src.extract.ocr import resolve_ocr_engine
+    from src.extract.ocr import ocr_env_setup_help, resolve_ocr_engine
 
     input_path = Path(args.input)
     if args.output:
@@ -104,7 +104,13 @@ def main() -> None:
             else input_path.with_suffix(".pptx")
         )
 
-    selected_engine = resolve_ocr_engine(ocr_engine=args.ocr_engine)
+    try:
+        selected_engine = resolve_ocr_engine(ocr_engine=args.ocr_engine)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        print(ocr_env_setup_help(), file=sys.stderr)
+        sys.exit(2)
+
     print(f"开始处理… OCR 引擎: {selected_engine}")
     run_pipeline(
         input_path,

@@ -37,7 +37,7 @@ pip install -r requirements.txt --index-url https://pypi.org/simple
 
 - 若腾讯与百度都配置：默认使用腾讯
 - 若仅配置一种：使用该引擎
-- 若都未配置：程序会报错并提示补齐配置
+- 若都未配置，或 `.env` 中仍为 `.env.example` 里的占位符（如 `your-api-key`）：`cli.py` 会立即退出（退出码 `2`）并提示先配置真实密钥
 
 ### 方案 A：腾讯云（推荐）
 

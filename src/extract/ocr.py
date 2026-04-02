@@ -38,6 +38,42 @@ _cached_token: str = ""
 _cached_token_expires_at: float = 0
 TOKEN_CACHE_BUFFER_SEC = 300  # 提前 5 分钟刷新
 
+# 与 .env.example 中占位符一致；视为「未配置」，避免误用示例值调用云端
+_OCR_PLACEHOLDER_VALUES = frozenset(
+    {
+        "your-api-key",
+        "your-secret-key",
+        "your-secret-id",
+        "changeme",
+        "placeholder",
+        "xxx",
+        "todo",
+    }
+)
+
+
+def _env_value_is_configured(value: str) -> bool:
+    s = (value or "").strip()
+    if not s:
+        return False
+    low = s.lower()
+    if low in _OCR_PLACEHOLDER_VALUES:
+        return False
+    return True
+
+
+def ocr_env_setup_help() -> str:
+    """缺少有效 OCR 配置时给终端用户 / Agent 的说明文本。"""
+    return (
+        "未检测到有效的 OCR 密钥配置（.env 缺失、为空或为 .env.example 中的占位符）。\n"
+        "请先向用户索取至少一种云端 OCR 凭据，在仓库根目录执行：cp .env.example .env\n"
+        "再编辑 .env 填入真实值（勿提交 .env 到版本库）：\n"
+        "  腾讯（推荐）：TENCENT_OCR_SECRET_ID、TENCENT_OCR_SECRET_KEY；可选 TENCENT_OCR_REGION\n"
+        "  百度：BAIDU_OCR_API_KEY、BAIDU_OCR_SECRET_KEY\n"
+        "配置完成后再运行：python cli.py -i <输入> -o <输出.pptx>\n"
+        "文档：README.md、.env.example"
+    )
+
 
 def _read_image_bytes(image: Union[Image.Image, str, Path]) -> bytes:
     if isinstance(image, (str, Path)):
@@ -59,15 +95,15 @@ def _hmac_sha256(key: bytes, msg: str) -> bytes:
 
 
 def _is_baidu_configured(api_key: str = "", secret_key: str = "") -> bool:
-    resolved_key = api_key or os.environ.get("BAIDU_OCR_API_KEY", "").strip()
-    resolved_secret = secret_key or os.environ.get("BAIDU_OCR_SECRET_KEY", "").strip()
-    return bool(resolved_key and resolved_secret)
+    resolved_key = (api_key or os.environ.get("BAIDU_OCR_API_KEY", "")).strip()
+    resolved_secret = (secret_key or os.environ.get("BAIDU_OCR_SECRET_KEY", "")).strip()
+    return _env_value_is_configured(resolved_key) and _env_value_is_configured(resolved_secret)
 
 
 def _is_tencent_configured(secret_id: str = "", secret_key: str = "") -> bool:
-    resolved_id = secret_id or os.environ.get("TENCENT_OCR_SECRET_ID", "").strip()
-    resolved_key = secret_key or os.environ.get("TENCENT_OCR_SECRET_KEY", "").strip()
-    return bool(resolved_id and resolved_key)
+    resolved_id = (secret_id or os.environ.get("TENCENT_OCR_SECRET_ID", "")).strip()
+    resolved_key = (secret_key or os.environ.get("TENCENT_OCR_SECRET_KEY", "")).strip()
+    return _env_value_is_configured(resolved_id) and _env_value_is_configured(resolved_key)
 
 
 def _resolve_ocr_engine(
