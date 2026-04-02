@@ -50,7 +50,7 @@ def _progress_callback_with_bar():
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="将单张图片 / 图片目录 / PDF 转为可编辑 PPT（需先 conda activate LLMs）",
+        description="将单张图片 / 图片目录 / PDF 转为可编辑 PPT（需已 pip install -r requirements.txt）",
     )
     parser.add_argument(
         "--input", "-i",
@@ -78,6 +78,12 @@ def main() -> None:
         help="标题/强调字体名（默认 Tencent Sans W7）",
     )
     parser.add_argument(
+        "--ocr-engine",
+        default="auto",
+        choices=["auto", "tencent", "baidu"],
+        help="OCR 引擎：auto(默认，优先腾讯)、tencent、baidu",
+    )
+    parser.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="不输出处理进度",
@@ -85,6 +91,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from src.pipeline import run_pipeline
+    from src.extract.ocr import resolve_ocr_engine
 
     input_path = Path(args.input)
     if args.output:
@@ -97,12 +104,14 @@ def main() -> None:
             else input_path.with_suffix(".pptx")
         )
 
-    print("开始处理…")
+    selected_engine = resolve_ocr_engine(ocr_engine=args.ocr_engine)
+    print(f"开始处理… OCR 引擎: {selected_engine}")
     run_pipeline(
         input_path,
         pptx_path,
         font_normal=args.font_normal,
         font_bold=args.font_bold,
+        ocr_engine=args.ocr_engine,
         pdf_output_path=args.pdf_output,
         progress_callback=None if args.quiet else _progress_callback_with_bar(),
     )

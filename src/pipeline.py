@@ -5,7 +5,7 @@ from typing import Callable, Optional, Union
 from PIL import Image
 
 from .input.loader import load_images
-from .extract.ocr import run_ocr
+from .extract.ocr import run_ocr, resolve_ocr_engine
 from .extract.style import infer_styles
 from .remove_text.design_reconstruction import reconstruct_background
 from .export.ppt import build_editable_pptx
@@ -26,6 +26,7 @@ def process_one_image(
     image: Image.Image,
     font_normal: str = "Tencent Sans W3",
     font_bold: str = "Tencent Sans W7",
+    ocr_engine: str = "auto",
     page_index: int = 0,
     total_pages: int = 1,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
@@ -38,8 +39,8 @@ def process_one_image(
         if progress_callback:
             progress_callback("page", page_index + 1, total_pages, step)
 
-    report("OCR 识别")
-    ocr_result = run_ocr(image)
+    report(f"OCR 识别({ocr_engine})")
+    ocr_result = run_ocr(image, ocr_engine=ocr_engine)
     report("样式推断")
     styled = infer_styles(image, ocr_result)
     report("去字重建")
@@ -52,6 +53,7 @@ def run_pipeline(
     output_path: Union[str, Path],
     font_normal: str = "Tencent Sans W3",
     font_bold: str = "Tencent Sans W7",
+    ocr_engine: str = "auto",
     pdf_output_path: Optional[Union[str, Path]] = None,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
 ) -> None:
@@ -69,11 +71,13 @@ def run_pipeline(
 
     report("load", 0, 1, "加载输入…")
     input_path = Path(input_path)
+    selected_engine = resolve_ocr_engine(ocr_engine=ocr_engine)
     images = load_images(input_path)
     if not images:
         raise ValueError("未得到任何图片")
     n = len(images)
     report("load", 1, 1, f"已加载 {n} 页")
+    report("load", 1, 1, f"OCR 引擎: {selected_engine}")
 
     if input_path.is_dir():
         default_pdf = Path(output_path).with_suffix(".pdf")
@@ -88,6 +92,7 @@ def run_pipeline(
             img,
             font_normal=font_normal,
             font_bold=font_bold,
+            ocr_engine=selected_engine,
             page_index=i,
             total_pages=n,
             progress_callback=progress_callback,

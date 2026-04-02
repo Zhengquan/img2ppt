@@ -1,3 +1,3 @@
-from .inpainting import remove_text_regions
+from .design_reconstruction import reconstruct_background
 
-__all__ = ["remove_text_regions"]
+__all__ = ["reconstruct_background"]

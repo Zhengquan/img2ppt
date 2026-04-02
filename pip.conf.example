@@ -1,0 +1,10 @@
+# 国内下载加速：复制为当前用户 pip 配置后，pip 默认走镜像（路径因系统而异，见 README）
+#
+# Linux/macOS:  ~/.pip/pip.conf
+# Windows:     %APPDATA%\pip\pip.ini
+#
+# 内容示例：
+
+[global]
+index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+trusted-host = pypi.tuna.tsinghua.edu.cn
