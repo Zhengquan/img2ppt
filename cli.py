@@ -55,7 +55,7 @@ def main() -> None:
     parser.add_argument(
         "--input", "-i",
         required=True,
-        help="输入路径：单张图片（PNG/JPG 等）/ 图片目录（多张图按文件名排序）/ PDF 文件",
+        help="输入：本地路径（单张图片 / 图片目录 / PDF）或 http/https 图片或 PDF 直链（自动下载）",
     )
     parser.add_argument(
         "--output", "-o",
@@ -92,17 +92,13 @@ def main() -> None:
 
     from src.pipeline import run_pipeline
     from src.extract.ocr import ocr_env_setup_help, resolve_ocr_engine
+    from src.input.loader import suggest_output_pptx_path
 
-    input_path = Path(args.input)
+    raw_input = args.input.strip()
     if args.output:
         pptx_path = Path(args.output)
     else:
-        # 单文件：直接改后缀；目录：在同一层目录下生成「目录名.pptx」
-        pptx_path = (
-            input_path.with_suffix(".pptx")
-            if input_path.is_file()
-            else input_path.with_suffix(".pptx")
-        )
+        pptx_path = suggest_output_pptx_path(raw_input)
 
     try:
         selected_engine = resolve_ocr_engine(ocr_engine=args.ocr_engine)
@@ -113,7 +109,7 @@ def main() -> None:
 
     print(f"开始处理… OCR 引擎: {selected_engine}")
     run_pipeline(
-        input_path,
+        raw_input,
         pptx_path,
         font_normal=args.font_normal,
         font_bold=args.font_bold,

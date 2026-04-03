@@ -4,7 +4,7 @@ from typing import Callable, Optional, Union
 
 from PIL import Image
 
-from .input.loader import load_images
+from .input.loader import download_url_to_temp, is_http_url, load_images
 from .extract.ocr import run_ocr, resolve_ocr_engine
 from .extract.style import infer_styles
 from .remove_text.design_reconstruction import reconstruct_background
@@ -59,7 +59,7 @@ def run_pipeline(
 ) -> None:
     """
     从单图或 PDF 生成可编辑 PPT（复用 banana-slides 的 PPTXBuilder）。
-    - input_path: 图片或 PDF 路径
+    - input_path: 本地图片/PDF/目录路径，或 http/https 直链（自动下载临时文件后处理）
     - output_path: 输出的 .pptx 路径
     - pdf_output_path: 当 input_path 为目录时，可选输出合并后的 PDF 路径；不传则默认与 ppt 同名 .pdf
     - progress_callback: 可选，(phase, current, total, message) -> None。
@@ -69,37 +69,51 @@ def run_pipeline(
         if progress_callback:
             progress_callback(phase, current, total, message)
 
-    report("load", 0, 1, "加载输入…")
-    input_path = Path(input_path)
-    selected_engine = resolve_ocr_engine(ocr_engine=ocr_engine)
-    images = load_images(input_path)
-    if not images:
-        raise ValueError("未得到任何图片")
-    n = len(images)
-    report("load", 1, 1, f"已加载 {n} 页")
-    report("load", 1, 1, f"OCR 引擎: {selected_engine}")
+    temp_download: Optional[Path] = None
+    try:
+        report("load", 0, 1, "加载输入…")
+        if is_http_url(input_path):
+            report("load", 0, 1, "正在从 URL 下载…")
+            temp_download = download_url_to_temp(str(input_path).strip())
+            resolved_input = temp_download
+        else:
+            resolved_input = Path(input_path)
 
-    if input_path.is_dir():
-        default_pdf = Path(output_path).with_suffix(".pdf")
-        pdf_path = Path(pdf_output_path) if pdf_output_path else default_pdf
-        report("load", 1, 1, f"合并目录图片为 PDF…")
-        _export_images_to_pdf(images, pdf_path)
-        report("load", 1, 1, f"已生成合并 PDF: {pdf_path}")
+        selected_engine = resolve_ocr_engine(ocr_engine=ocr_engine)
+        images = load_images(resolved_input)
+        if not images:
+            raise ValueError("未得到任何图片")
+        n = len(images)
+        report("load", 1, 1, f"已加载 {n} 页")
+        report("load", 1, 1, f"OCR 引擎: {selected_engine}")
 
-    slides_data = []
-    for i, img in enumerate(images):
-        cleaned, styled = process_one_image(
-            img,
-            font_normal=font_normal,
-            font_bold=font_bold,
-            ocr_engine=selected_engine,
-            page_index=i,
-            total_pages=n,
-            progress_callback=progress_callback,
-        )
-        w, h = cleaned.size
-        slides_data.append((cleaned, styled, w, h))
+        if resolved_input.is_dir():
+            default_pdf = Path(output_path).with_suffix(".pdf")
+            pdf_path = Path(pdf_output_path) if pdf_output_path else default_pdf
+            report("load", 1, 1, f"合并目录图片为 PDF…")
+            _export_images_to_pdf(images, pdf_path)
+            report("load", 1, 1, f"已生成合并 PDF: {pdf_path}")
 
-    report("export", 0, n, "开始写入 PPT…")
-    build_editable_pptx(slides_data, output_path, progress_callback=progress_callback)
-    report("export", n, n, "写入完成")
+        slides_data = []
+        for i, img in enumerate(images):
+            cleaned, styled = process_one_image(
+                img,
+                font_normal=font_normal,
+                font_bold=font_bold,
+                ocr_engine=selected_engine,
+                page_index=i,
+                total_pages=n,
+                progress_callback=progress_callback,
+            )
+            w, h = cleaned.size
+            slides_data.append((cleaned, styled, w, h))
+
+        report("export", 0, n, "开始写入 PPT…")
+        build_editable_pptx(slides_data, output_path, progress_callback=progress_callback)
+        report("export", n, n, "写入完成")
+    finally:
+        if temp_download is not None and temp_download.exists():
+            try:
+                temp_download.unlink()
+            except OSError:
+                pass

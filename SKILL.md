@@ -9,7 +9,21 @@ description: >-
 ## 何时使用
 
 - 用户提供图片、多图目录或 PDF，要生成可编辑 .pptx
+- 用户提供**图片或 PDF 的直链**（`http://` 与 `https://` 均可，非网页文章页），要生成可编辑 .pptx
 - 用户提到：图片转 PPT、PDF 转 PPT、截图转 PPT、可编辑幻灯片、OCR、去字
+
+## 图片大小与上下文（必读）
+
+- **单张图片**（含 URL 下载下来的整段内容）建议并**默认按 ≤ 4MB** 处理：`cli.py` 对 **http/https 直链下载**与**本地单图**会拒绝超过 **4MB** 的文件，避免 OCR/对话**上下文溢出**报错。
+- **PDF** 未按 4MB 硬截断（多页 PDF 常更大）；若在对话里嵌入整份 PDF 或超大图，仍可能触达宿主上下文上限——应改为只传链接、压缩或分页处理。
+- 向用户说明：若原图超过 4MB，需先压缩、降分辨率或裁剪后再传路径/链接。
+
+## 链接展示与下载（面向用户时的固定话术）
+
+当需要把**可下载链接**（原图直链、网盘直链、临时下载地址等）发给用户时，**必须同时**提醒：
+
+- 微信、QQ、部分 App **内置浏览器**可能拦截直链，页面显示类似「**站点正在维护中，请稍后重试**」**并不代表**链接失效。
+- 请用户复制链接，用**系统默认浏览器**（Safari / Chrome / Edge 等）打开后再下载；必要时「在浏览器中打开」或「复制链接到浏览器」。
 
 ## 前置条件
 
@@ -89,6 +103,9 @@ pip install -r requirements.txt
 | 单张图 | `python cli.py --input image.png --output out.pptx` |
 | 图片目录 | `python cli.py --input images_dir --output out.pptx`（按文件名排序；会生成合并 PDF + 一个 pptx） |
 | PDF | `python cli.py --input doc.pdf --output out.pptx` |
+| **图片或 PDF 直链** | `python cli.py --input "http://example.com/slide.png" --output out.pptx`（`http` / `https` 均可；自动下载；须为**直接文件 URL**，不能是需登录的 HTML 预览页；下载体 ≤4MB） |
+
+`-i` 为 URL 且未指定 `-o` 时，默认输出名为 URL 路径中的文件名（stem）+ `.pptx`，若无有效文件名则用 `remote_input.pptx`（生成在当前工作目录）。
 
 常用参数：
 
