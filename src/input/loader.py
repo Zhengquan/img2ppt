@@ -1,6 +1,4 @@
 """输入适配：单图加载或 PDF 逐页转图，统一输出「图片列表」；支持 http/https 图片或 PDF 直链自动下载。"""
-import io
-import os
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import List, Union
@@ -11,9 +9,6 @@ from PIL import Image
 
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif"}
-
-# 远程下载与建议的单文件输入上限（与 SKILL 说明一致）；过大易导致 OCR/对话上下文溢出
-MAX_INPUT_DOWNLOAD_BYTES = 4 * 1024 * 1024
 
 _PIL_FORMAT_TO_EXT = {
     "PNG": ".png",
@@ -43,11 +38,13 @@ def suggest_output_pptx_path(raw_input: str) -> Path:
     return Path(raw).with_suffix(".pptx")
 
 
-def _suffix_after_download(data: bytes) -> str:
-    if data.startswith(b"%PDF"):
+def _suffix_after_download_path(file_path: Path) -> str:
+    with open(file_path, "rb") as f:
+        head = f.read(8)
+    if head.startswith(b"%PDF"):
         return ".pdf"
     try:
-        im = Image.open(io.BytesIO(data))
+        im = Image.open(file_path)
         im.load()
     except Exception as e:
         raise ValueError(
@@ -60,9 +57,9 @@ def _suffix_after_download(data: bytes) -> str:
     return ext
 
 
-def download_url_to_temp(url: str, max_bytes: int = MAX_INPUT_DOWNLOAD_BYTES) -> Path:
+def download_url_to_temp(url: str) -> Path:
     """
-    下载 URL 到临时文件并返回路径。仅支持 PDF 或常见位图；流式读取并限制总大小。
+    下载 URL 到临时文件并返回路径。仅支持 PDF 或常见位图；流式写入磁盘，不设体积上限（本机 CLI 场景）。
     """
     url = url.strip()
     headers = {
@@ -71,47 +68,32 @@ def download_url_to_temp(url: str, max_bytes: int = MAX_INPUT_DOWNLOAD_BYTES) ->
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
-    with requests.get(url, stream=True, timeout=120, headers=headers, allow_redirects=True) as r:
-        r.raise_for_status()
-        chunks: List[bytes] = []
-        total = 0
-        for chunk in r.iter_content(chunk_size=65536):
-            if not chunk:
-                continue
-            total += len(chunk)
-            if total > max_bytes:
-                mb = max_bytes // (1024 * 1024)
-                raise ValueError(
-                    f"下载大小超过 {mb}MB 限制。请先压缩或换用较小文件；过大图片还会导致对话上下文溢出。"
-                )
-            chunks.append(chunk)
-    data = b"".join(chunks)
-    if not data:
-        raise ValueError("下载内容为空")
-    suffix = _suffix_after_download(data)
-    fd, path_str = tempfile.mkstemp(suffix=suffix)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
+        tmp_path = Path(tmp.name)
+        with requests.get(url, stream=True, timeout=120, headers=headers, allow_redirects=True) as r:
+            r.raise_for_status()
+            for chunk in r.iter_content(chunk_size=65536):
+                if chunk:
+                    tmp.write(chunk)
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        if tmp_path.stat().st_size == 0:
+            tmp_path.unlink(missing_ok=True)
+            raise ValueError("下载内容为空")
+        suf = _suffix_after_download_path(tmp_path)
+        final = tmp_path.with_suffix(suf)
+        if final != tmp_path:
+            tmp_path.rename(final)
+            tmp_path = final
+        return tmp_path
     except Exception:
-        try:
-            os.unlink(path_str)
-        except OSError:
-            pass
+        tmp_path.unlink(missing_ok=True)
         raise
-    return Path(path_str)
 
 
 def _load_single_image(path: Union[str, Path]) -> Image.Image:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"文件不存在: {path}")
-    sz = path.stat().st_size
-    if sz > MAX_INPUT_DOWNLOAD_BYTES:
-        mb = MAX_INPUT_DOWNLOAD_BYTES // (1024 * 1024)
-        raise ValueError(
-            f"图片文件超过 {mb}MB 限制（当前约 {sz / (1024 * 1024):.2f}MB）。请先压缩；过大图片易导致上下文溢出。"
-        )
     img = Image.open(path).convert("RGB")
     return img
 
