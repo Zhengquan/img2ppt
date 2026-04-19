@@ -60,6 +60,8 @@ pip install -r requirements.txt --index-url https://pypi.org/simple
 
 也可通过 `--ocr-engine` 显式指定引擎：`auto|tencent|baidu`（默认 `auto`）。
 
+在非默认工作目录、CI 或需把密钥与仓库分开时，可通过环境变量 **`IMAGES2PPT_ROOT`**（仓库根）或 **`IMAGES2PPT_ENV_FILE`**（`.env` 文件路径）指定加载位置，无需改代码；说明见根目录 **SKILL.md**。
+
 ## 使用方式
 
 在项目根目录、已安装依赖的前提下：

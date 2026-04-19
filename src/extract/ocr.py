@@ -12,8 +12,10 @@ from typing import List, Tuple, Union
 import requests
 from PIL import Image
 
-# 加载 .env（若存在）
-_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+from ..utils.repo_paths import resolve_dotenv_path
+
+# 加载 .env（若存在）；路径可通过 IMAGES2PPT_ROOT / IMAGES2PPT_ENV_FILE 覆盖（见 SKILL.md）
+_env_path = resolve_dotenv_path()
 if _env_path.exists():
     try:
         from dotenv import load_dotenv
