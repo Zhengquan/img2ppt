@@ -11,6 +11,8 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
+from pptx.oxml.ns import qn
+from lxml import etree
 from html.parser import HTMLParser
 
 logger = logging.getLogger(__name__)
@@ -134,7 +136,8 @@ class PPTXBuilder:
             core.last_modified_by = "images-2-ppt"
             core.created = now
             core.modified = now
-            core.last_printed = None
+            # 不要给 last_printed 赋 None：python-pptx 会校验 datetime 类型。
+            # 保持默认（未设置）即可。
         except Exception as e:
             logger.warning(f"Failed to set core properties: {e}")
 
@@ -175,14 +178,23 @@ class PPTXBuilder:
         return pixels / dpi
 
     def calculate_font_size(
-        self, bbox: List[int], text: str, text_level: Any = None, dpi: int = None
+        self, bbox: List[int], text: str, text_level: Any = None, dpi: int = None,
+        width_safety: float = 0.96,
     ) -> float:
+        """根据 bbox 和文本反推字号。
+
+        width_safety: 可用宽度系数（<=1.0）。用于在 OCR bbox 宽度比真实
+        glyph advance 略紧的情况下，给字号再打点保险，避免临界折行。
+        默认 0.96（约 4% 余量），极端缩窄可调到 0.90。
+        """
         dpi = dpi or self.DEFAULT_DPI
         width_px = bbox[2] - bbox[0]
         height_px = bbox[3] - bbox[1]
         width_pt = (width_px / dpi) * 72
         height_pt = (height_px / dpi) * 72
-        usable_width_pt = width_pt
+        # 宽度留出安全余量，防止 OCR bbox 比真实 glyph advance 略紧导致折行
+        safety = max(0.5, min(1.0, float(width_safety)))
+        usable_width_pt = width_pt * safety
         usable_height_pt = height_pt
         if usable_width_pt <= 0 or usable_height_pt <= 0:
             return self.MIN_FONT_SIZE
@@ -219,6 +231,38 @@ class PPTXBuilder:
                 break
         return best_size
 
+    @staticmethod
+    def _decorate_run_rpr(
+        run,
+        *,
+        font_latin: Optional[str] = None,
+        font_east_asian: Optional[str] = None,
+        text_lang: Optional[str] = None,
+        text_alt_lang: Optional[str] = None,
+    ) -> None:
+        """在 run 的 a:rPr 上写入东亚字体与语言标签。
+
+        - a:latin / a:ea 决定英文与中文字形；
+        - rPr@lang / rPr@altLang 决定拼写检查使用的语言。
+        旧节点会先移除，避免重复。
+        """
+        # python-pptx 在设置 font 相关属性时才会创建 rPr
+        rPr = run._r.get_or_add_rPr()
+        if font_latin:
+            for old in rPr.findall(qn("a:latin")):
+                rPr.remove(old)
+            latin = etree.SubElement(rPr, qn("a:latin"))
+            latin.set("typeface", font_latin)
+        if font_east_asian:
+            for old in rPr.findall(qn("a:ea")):
+                rPr.remove(old)
+            ea = etree.SubElement(rPr, qn("a:ea"))
+            ea.set("typeface", font_east_asian)
+        if text_lang:
+            rPr.set("lang", text_lang)
+        if text_alt_lang:
+            rPr.set("altLang", text_alt_lang)
+
     def add_text_element(
         self,
         slide,
@@ -228,6 +272,12 @@ class PPTXBuilder:
         dpi: int = None,
         align: str = "left",
         text_style: Any = None,
+        font_latin: Optional[str] = None,
+        font_east_asian: Optional[str] = None,
+        text_lang: Optional[str] = "zh-CN",
+        text_alt_lang: Optional[str] = "en-US",
+        expand_ratio: float = 0.0,
+        width_safety: float = 0.96,
     ):
         dpi = dpi or self.DEFAULT_DPI
         has_colored_segments = (
@@ -240,7 +290,8 @@ class PPTXBuilder:
             if has_colored_segments
             else text
         )
-        EXPAND_RATIO = 0.01
+        # 文本框尺寸：仅按 expand_ratio 轻微外扩（默认 0，由调用侧自己控制外扩）
+        EXPAND_RATIO = max(0.0, float(expand_ratio))
         bbox_width = bbox[2] - bbox[0]
         bbox_height = bbox[3] - bbox[1]
         expand_w = bbox_width * EXPAND_RATIO
@@ -261,7 +312,7 @@ class PPTXBuilder:
             return s.replace("·", "•", 1) if s.lstrip().startswith("·") else s
 
         actual_text = replace_some_chars(actual_text)
-        font_size = self.calculate_font_size(bbox, actual_text, text_level, dpi)
+        font_size = self.calculate_font_size(bbox, actual_text, text_level, dpi, width_safety=width_safety)
         effective_align = align
         if text_style and getattr(text_style, "text_alignment", None):
             effective_align = text_style.text_alignment
@@ -270,6 +321,10 @@ class PPTXBuilder:
         is_underline = getattr(text_style, "is_underline", False) if text_style else False
         if text_level == 1 or text_level == "title":
             is_bold = True
+
+        # 决定最终使用的字体（粗体走 bold 字体）
+        chosen_latin = font_latin
+        chosen_ea = font_east_asian
 
         if has_colored_segments:
             paragraph = text_frame.paragraphs[0]
@@ -283,25 +338,57 @@ class PPTXBuilder:
                 r, g, b = seg.color_rgb
                 run.font.color.rgb = RGBColor(r, g, b)
                 run.font.italic = getattr(seg, "is_latex", False) or is_italic
+                if chosen_latin:
+                    run.font.name = chosen_latin
+                self._decorate_run_rpr(
+                    run,
+                    font_latin=chosen_latin,
+                    font_east_asian=chosen_ea,
+                    text_lang=text_lang,
+                    text_alt_lang=text_alt_lang,
+                )
         else:
-            text_frame.text = actual_text
-            paragraph = text_frame.paragraphs[0]
-            paragraph.font.size = Pt(font_size)
-            paragraph.font.bold = is_bold
-            paragraph.font.italic = is_italic
-            paragraph.font.underline = is_underline
-            if text_style and getattr(text_style, "font_color_rgb", None):
-                r, g, b = text_style.font_color_rgb
-                paragraph.font.color.rgb = RGBColor(r, g, b)
+            # 手动按 "\n" 拆段，保证每行一个段落，对齐/字号等属性逐段设置
+            lines = actual_text.split("\n") if actual_text else [""]
+            # 清空默认首段
+            text_frame.clear()
+            first_para = text_frame.paragraphs[0]
+            paragraphs_to_style: List[Any] = []
+            for idx, line in enumerate(lines):
+                p = first_para if idx == 0 else text_frame.add_paragraph()
+                paragraphs_to_style.append(p)
+                run = p.add_run()
+                run.text = line
+                run.font.size = Pt(font_size)
+                run.font.bold = is_bold
+                run.font.italic = is_italic
+                run.font.underline = is_underline
+                if text_style and getattr(text_style, "font_color_rgb", None):
+                    r, g, b = text_style.font_color_rgb
+                    run.font.color.rgb = RGBColor(r, g, b)
+                if chosen_latin:
+                    run.font.name = chosen_latin
+                self._decorate_run_rpr(
+                    run,
+                    font_latin=chosen_latin,
+                    font_east_asian=chosen_ea,
+                    text_lang=text_lang,
+                    text_alt_lang=text_alt_lang,
+                )
+            # 供后续 align 设置（沿用老接口的 `paragraph` 变量名，指向首段即可）
+            paragraph = first_para
 
         if effective_align == "center":
-            paragraph.alignment = PP_ALIGN.CENTER
+            align_val = PP_ALIGN.CENTER
         elif effective_align == "right":
-            paragraph.alignment = PP_ALIGN.RIGHT
+            align_val = PP_ALIGN.RIGHT
         elif effective_align == "justify":
-            paragraph.alignment = PP_ALIGN.JUSTIFY
+            align_val = PP_ALIGN.JUSTIFY
         else:
-            paragraph.alignment = PP_ALIGN.LEFT
+            align_val = PP_ALIGN.LEFT
+        # 多段：每段都要应用对齐
+        for p in text_frame.paragraphs:
+            p.alignment = align_val
 
     def add_image_element(self, slide, image_path: str, bbox: List[int], dpi: int = None):
         dpi = dpi or self.DEFAULT_DPI

@@ -113,12 +113,15 @@ pip install -r requirements.txt
 常用参数：
 
 - `-i` / `-o`：输入、输出 .pptx
-- `--font-normal`：正文（默认 Tencent Sans W3）
-- `--font-bold`：强调（默认 Tencent Sans W7）
+- `--font-normal` / `--font-bold`：西文（latin）正文 / 强调字体（默认 `Tencent Sans W3` / `Tencent Sans W7`）
+- `--font-ea-normal` / `--font-ea-bold`：东亚（中文）正文 / 强调字体（默认 `腾讯字体 W3` / `腾讯字体 W7`），Windows/中文 WPS 下决定中文实际显示字体
+- `--text-lang` / `--text-alt-lang`：文本 run 的主/副语言标签（默认 `zh-CN` / `en-US`），避免英文环境下中文被打上拼写检查的红色波浪线
+- `--text-pad-ratio`：文本框向右扩宽比例（默认 `0.08`，防止贴边折行；`0` 关闭扩宽）
+- `--no-merge-textbox`：关闭同行短文本框合并（默认开启合并，能把被 OCR 切碎的同行文字拼回一个文本框）
 - `--ocr-engine`：`auto|tencent|baidu`（默认 `auto`，优先腾讯）
 - `-q`：安静模式
 
-示例：`python cli.py -i in.png -o out.pptx --font-normal "思源黑体" --font-bold "思源黑体 Bold"`
+示例：`python cli.py -i in.png -o out.pptx --font-normal "思源黑体" --font-bold "思源黑体 Bold" --font-ea-normal "思源黑体" --font-ea-bold "思源黑体 Bold"`
 
 ## 流水线（三步）
 

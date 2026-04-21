@@ -69,13 +69,50 @@ def main() -> None:
     )
     parser.add_argument(
         "--font-normal",
-        default="Tencent Sans W3",
-        help="正文字体名（默认 Tencent Sans W3）",
+        default=None,
+        help="正文字体名（西文 latin；不指定时按系统语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
     )
     parser.add_argument(
         "--font-bold",
-        default="Tencent Sans W7",
-        help="标题/强调字体名（默认 Tencent Sans W7）",
+        default=None,
+        help="标题/强调字体名（西文 latin；不指定时按系统语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+    )
+    parser.add_argument(
+        "--font-ea-normal",
+        default=None,
+        help="正文东亚字体名（不指定时按系统语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
+    )
+    parser.add_argument(
+        "--font-ea-bold",
+        default=None,
+        help="标题/强调东亚字体名（不指定时按系统语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+    )
+    parser.add_argument(
+        "--text-lang",
+        default="zh-CN",
+        help="文本 run 的主语言标签（默认 zh-CN，避免中文被判成英文而触发拼写检查红线）",
+    )
+    parser.add_argument(
+        "--text-alt-lang",
+        default="en-US",
+        help="文本 run 的副语言标签（默认 en-US，用于夹杂英文）",
+    )
+    parser.add_argument(
+        "--text-pad-ratio",
+        type=float,
+        default=0.08,
+        help="文本框向右扩宽比例（默认 0.08，防止贴边折行；0 表示不扩宽）",
+    )
+    parser.add_argument(
+        "--width-safety",
+        type=float,
+        default=0.96,
+        help="字号反推的宽度安全系数（默认 0.96，越小字号越保守；临界折行严重时可降到 0.90）",
+    )
+    parser.add_argument(
+        "--no-merge-textbox",
+        action="store_true",
+        help="关闭同行短文本框合并（调试用，默认开启合并）",
     )
     parser.add_argument(
         "--ocr-engine",
@@ -93,6 +130,14 @@ def main() -> None:
     from src.pipeline import run_pipeline
     from src.extract.ocr import ocr_env_setup_help, resolve_ocr_engine
     from src.input.loader import suggest_output_pptx_path
+    from src.utils.fonts import default_fonts
+
+    # 字体：未显式指定则按系统语言自适应
+    _dl_normal, _dl_bold, _dea_normal, _dea_bold = default_fonts()
+    font_normal = args.font_normal or _dl_normal
+    font_bold = args.font_bold or _dl_bold
+    font_ea_normal = args.font_ea_normal or _dea_normal
+    font_ea_bold = args.font_ea_bold or _dea_bold
 
     raw_input = args.input.strip()
     if args.output:
@@ -108,11 +153,19 @@ def main() -> None:
         sys.exit(2)
 
     print(f"开始处理… OCR 引擎: {selected_engine}")
+    print(f"字体: latin={font_normal}/{font_bold}  ea={font_ea_normal}/{font_ea_bold}")
     run_pipeline(
         raw_input,
         pptx_path,
-        font_normal=args.font_normal,
-        font_bold=args.font_bold,
+        font_normal=font_normal,
+        font_bold=font_bold,
+        font_ea_normal=font_ea_normal,
+        font_ea_bold=font_ea_bold,
+        text_lang=args.text_lang,
+        text_alt_lang=args.text_alt_lang,
+        text_pad_ratio=args.text_pad_ratio,
+        width_safety=args.width_safety,
+        merge_textbox=not args.no_merge_textbox,
         ocr_engine=args.ocr_engine,
         pdf_output_path=args.pdf_output,
         progress_callback=None if args.quiet else _progress_callback_with_bar(),

@@ -69,8 +69,11 @@ pip install -r requirements.txt --index-url https://pypi.org/simple
 - **单张图片**：`python cli.py --input image.png --output out.pptx`
 - **图片目录**：`python cli.py --input images_dir --output out.pptx`（按文件名排序；会自动合并生成 `out.pdf`，并输出一个 `out.pptx`）
 - **PDF 文件**：`python cli.py --input doc.pdf --output out.pptx`（每页 PDF 对应一页幻灯片）
-- **指定字体**：`python cli.py -i in.png -o out.pptx --font-normal "思源黑体" --font-bold "思源黑体 Bold"`
+- **指定字体**：`python cli.py -i in.png -o out.pptx --font-normal "思源黑体" --font-bold "思源黑体 Bold" --font-ea-normal "思源黑体" --font-ea-bold "思源黑体 Bold"`
 - **指定 OCR 引擎**：`python cli.py -i in.png -o out.pptx --ocr-engine tencent`
+- **防折行扩宽**：默认向右扩宽 8%，如需关闭可加 `--text-pad-ratio 0`；
+- **关闭同行短框合并**：`--no-merge-textbox`（调试用，正常无需指定）；
+- **切换拼写检查语言**：默认 `--text-lang zh-CN --text-alt-lang en-US`，导出纯英文 PPT 时可改为 `--text-lang en-US`。
 
 ## 输入 / 输出
 
@@ -83,7 +86,7 @@ pip install -r requirements.txt --index-url https://pypi.org/simple
 2. 去文字化（**设计语义分层重建**：纯色/渐变重绘，复杂纹理用近似色填充，不加载任何 inpainting 模型）
 3. 使用 **banana-slides** 的 [PPTXBuilder](https://github.com/Anionex/banana-slides) 在无字底图上按 bbox 放置可编辑文本框并导出 .pptx
 
-字体默认使用 Tencent Sans W3（正文）/ Tencent Sans W7（标题/强调）；若系统未安装，可经配置改为其他字体（如思源黑体）。
+字体默认同时写入「西文」与「东亚（中文）」两套名字：正文 `Tencent Sans W3` / `腾讯字体 W3`，加粗/标题 `Tencent Sans W7` / `腾讯字体 W7`，确保 Windows / macOS、中英文系统均能命中；若系统未安装，可经 `--font-normal` / `--font-bold` / `--font-ea-normal` / `--font-ea-bold` 改为其他字体（如思源黑体）。同时每个文本 run 默认写入 `lang="zh-CN"` 与 `altLang="en-US"`，避免英文环境下 PPT/WPS 将中文误判为英文而打出拼写检查红色波浪线。
 
 ## 与 banana-slides 的复用
 

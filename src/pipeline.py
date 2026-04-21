@@ -9,6 +9,7 @@ from .extract.ocr import run_ocr, resolve_ocr_engine
 from .extract.style import infer_styles
 from .remove_text.design_reconstruction import reconstruct_background
 from .export.ppt import build_editable_pptx
+from .utils.fonts import default_fonts
 
 
 def _export_images_to_pdf(images: list[Image.Image], pdf_path: Union[str, Path]) -> None:
@@ -24,8 +25,8 @@ def _export_images_to_pdf(images: list[Image.Image], pdf_path: Union[str, Path])
 
 def process_one_image(
     image: Image.Image,
-    font_normal: str = "Tencent Sans W3",
-    font_bold: str = "Tencent Sans W7",
+    font_normal: Optional[str] = None,
+    font_bold: Optional[str] = None,
     ocr_engine: str = "auto",
     page_index: int = 0,
     total_pages: int = 1,
@@ -51,8 +52,15 @@ def process_one_image(
 def run_pipeline(
     input_path: Union[str, Path],
     output_path: Union[str, Path],
-    font_normal: str = "Tencent Sans W3",
-    font_bold: str = "Tencent Sans W7",
+    font_normal: Optional[str] = None,
+    font_bold: Optional[str] = None,
+    font_ea_normal: Optional[str] = None,
+    font_ea_bold: Optional[str] = None,
+    text_lang: str = "zh-CN",
+    text_alt_lang: str = "en-US",
+    text_pad_ratio: float = 0.08,
+    width_safety: float = 0.96,
+    merge_textbox: bool = True,
     ocr_engine: str = "auto",
     pdf_output_path: Optional[Union[str, Path]] = None,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
@@ -62,9 +70,17 @@ def run_pipeline(
     - input_path: 本地图片/PDF/目录路径，或 http/https 直链（自动下载临时文件后处理）
     - output_path: 输出的 .pptx 路径
     - pdf_output_path: 当 input_path 为目录时，可选输出合并后的 PDF 路径；不传则默认与 ppt 同名 .pdf
+    - font_normal/font_bold/font_ea_normal/font_ea_bold: 为 None 时按系统语言自适应
+      （中文→腾讯字体 W3/W7；英文→TencentSans W3/W7）。
     - progress_callback: 可选，(phase, current, total, message) -> None。
       phase 为 "load"|"page"|"export"，current/total 为当前步与总步数，message 为简短说明。
     """
+    # 字体兜底：未显式指定则按系统语言选默认
+    _dl_normal, _dl_bold, _dea_normal, _dea_bold = default_fonts()
+    font_normal = font_normal or _dl_normal
+    font_bold = font_bold or _dl_bold
+    font_ea_normal = font_ea_normal or _dea_normal
+    font_ea_bold = font_ea_bold or _dea_bold
     def report(phase: str, current: int, total: int, message: str):
         if progress_callback:
             progress_callback(phase, current, total, message)
@@ -109,7 +125,20 @@ def run_pipeline(
             slides_data.append((cleaned, styled, w, h))
 
         report("export", 0, n, "开始写入 PPT…")
-        build_editable_pptx(slides_data, output_path, progress_callback=progress_callback)
+        build_editable_pptx(
+            slides_data,
+            output_path,
+            progress_callback=progress_callback,
+            font_normal=font_normal,
+            font_bold=font_bold,
+            font_ea_normal=font_ea_normal,
+            font_ea_bold=font_ea_bold,
+            text_lang=text_lang,
+            text_alt_lang=text_alt_lang,
+            text_pad_ratio=text_pad_ratio,
+            width_safety=width_safety,
+            merge_textbox=merge_textbox,
+        )
         report("export", n, n, "写入完成")
     finally:
         if temp_download is not None and temp_download.exists():

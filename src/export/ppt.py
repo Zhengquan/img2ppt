@@ -9,6 +9,7 @@ from pptx.dml.color import RGBColor
 from PIL import Image
 
 from ..utils.pptx_builder import PPTXBuilder
+from .merge_blocks import merge_inline_blocks, merge_vertical_paragraphs
 
 
 # 默认幻灯片尺寸（英寸，16:9 宽屏），与 banana-slides 一致
@@ -59,12 +60,29 @@ def build_editable_pptx(
     output_path: Union[str, Path],
     dpi: int = 96,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
+    *,
+    font_normal: str = "Tencent Sans W3",
+    font_bold: str = "Tencent Sans W7",
+    font_ea_normal: str = "腾讯字体 W3",
+    font_ea_bold: str = "腾讯字体 W7",
+    text_lang: str = "zh-CN",
+    text_alt_lang: str = "en-US",
+    text_pad_ratio: float = 0.08,
+    width_safety: float = 0.96,
+    merge_textbox: bool = True,
 ) -> None:
     """
     使用 banana-slides 的 PPTXBuilder 生成可编辑 PPTX。
     每页：干净背景图 + 按 bbox 放置的文本框（可编辑）。
     slides_data: [(background_image, styled_blocks, img_w, img_h), ...]
     progress_callback: 可选，(phase, current, total, message) -> None。
+
+    附加优化：
+    - merge_textbox=True 时，先做同行短框合并（同样式相邻，见 merge_blocks）
+    - 再按 text_pad_ratio 对单个文本框向右扩宽，避免贴边折行
+    - width_safety<1.0 时，反推字号多留 (1-width_safety) 安全余量，
+      对抗 OCR bbox 比真实 glyph advance 略紧导致的临界折行
+    - 每个 run 同时写入西文/东亚字体与 lang/altLang，避免中英文系统字体回退与拼写误报
     """
     builder = PPTXBuilder()
     builder.setup_presentation_size(SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX, dpi=dpi)
@@ -100,20 +118,43 @@ def build_editable_pptx(
             if need_unlink:
                 Path(bg_path).unlink(missing_ok=True)
 
-        for blk in styled_blocks:
+        # 1) 合并同行短文本框（在像素坐标上做，阈值按图像分辨率，不受 slide 尺寸影响）
+        effective_blocks = styled_blocks
+        if merge_textbox and styled_blocks:
+            effective_blocks = merge_inline_blocks(
+                styled_blocks,
+                slide_width_px=img_w,  # 以原图像素为上限，避免跨图边
+            )
+            # 1b) 再做跨行段落合并：同样式、左对齐、y 紧邻一行内
+            effective_blocks = merge_vertical_paragraphs(
+                effective_blocks,
+                slide_width_px=img_w,
+                slide_height_px=img_h,
+            )
+
+        for blk in effective_blocks:
             box = blk.get("box")
             text = (blk.get("text") or "").strip()
             if not box or not text:
                 continue
             x0, y0, x1, y1 = _box_bounds(box)
-            bbox_slide = [
-                int(x0 * scale_x),
-                int(y0 * scale_y),
-                int(x1 * scale_x),
-                int(y1 * scale_y),
-            ]
+            # 换算到 slide 像素坐标
+            bx0 = int(x0 * scale_x)
+            by0 = int(y0 * scale_y)
+            bx1 = int(x1 * scale_x)
+            by1 = int(y1 * scale_y)
+            # 2) 仅向右扩宽，不越页面右界
+            if text_pad_ratio and text_pad_ratio > 0:
+                pad = int((bx1 - bx0) * text_pad_ratio)
+                bx1 = min(SLIDE_WIDTH_PX, bx1 + pad)
+            bbox_slide = [bx0, by0, bx1, by1]
+
             text_style = _styled_block_to_text_style(blk)
-            text_level = "title" if blk.get("bold") else "default"
+            is_title = bool(blk.get("bold"))
+            text_level = "title" if is_title else "default"
+            # 3) 根据 bold 选择字体；粗体用 W7，否则 W3
+            latin = font_bold if is_title else font_normal
+            east_asian = font_ea_bold if is_title else font_ea_normal
             try:
                 builder.add_text_element(
                     slide=slide,
@@ -123,6 +164,12 @@ def build_editable_pptx(
                     dpi=dpi,
                     align="left",
                     text_style=text_style,
+                    font_latin=latin,
+                    font_east_asian=east_asian,
+                    text_lang=text_lang,
+                    text_alt_lang=text_alt_lang,
+                    expand_ratio=0.0,  # bbox 外扩已在上方 text_pad_ratio 处理
+                    width_safety=width_safety,
                 )
             except Exception as e:
                 import logging
