@@ -143,10 +143,13 @@ def build_editable_pptx(
             by0 = int(y0 * scale_y)
             bx1 = int(x1 * scale_x)
             by1 = int(y1 * scale_y)
-            # 2) 仅向右扩宽，不越页面右界
+            # 2) 仅向右扩宽，不越页面右界，同时以原图宽度为硬上限避免超出背景
             if text_pad_ratio and text_pad_ratio > 0:
                 pad = int((bx1 - bx0) * text_pad_ratio)
-                bx1 = min(SLIDE_WIDTH_PX, bx1 + pad)
+                bx1 = bx1 + pad
+            # 用原图像素作为内容边界（背景图不可能比原图大）
+            max_content_width = int(img_w * scale_x)
+            bx1 = min(bx1, max_content_width)
             bbox_slide = [bx0, by0, bx1, by1]
 
             text_style = _styled_block_to_text_style(blk)

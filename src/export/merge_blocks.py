@@ -41,10 +41,25 @@ def _color_tuple(c) -> Tuple[int, int, int]:
     return 0, 0, 0
 
 
-def _same_style(a: dict, b: dict, *, size_tol_pt: float = 0.5) -> bool:
+def _color_close(a, b, tol: int) -> bool:
+    """每通道最大差 ≤ tol 则视为同色。tol=0 等价于完全相等。"""
+    ca = _color_tuple(a)
+    cb = _color_tuple(b)
+    if tol <= 0:
+        return ca == cb
+    return max(abs(ca[0] - cb[0]), abs(ca[1] - cb[1]), abs(ca[2] - cb[2])) <= tol
+
+
+def _same_style(
+    a: dict,
+    b: dict,
+    *,
+    size_tol_pt: float = 0.5,
+    color_tol: int = 0,
+) -> bool:
     if bool(a.get("bold", False)) != bool(b.get("bold", False)):
         return False
-    if _color_tuple(a.get("color")) != _color_tuple(b.get("color")):
+    if not _color_close(a.get("color"), b.get("color"), color_tol):
         return False
     sa = float(a.get("font_size_pt", 0) or 0)
     sb = float(b.get("font_size_pt", 0) or 0)
@@ -177,17 +192,20 @@ def _merge_group(blks: List[dict], enriched_group: List[dict]) -> dict:
 def merge_vertical_paragraphs(
     styled_blocks: List[dict],
     *,
-    x_align_ratio: float = 1.2,
-    line_gap_ratio: float = 1.0,
+    x_align_ratio: float = 2.0,
+    line_gap_ratio: float = 1.5,
     size_tol_pt: float = 1.0,
-    width_overlap_ratio: float = 0.3,
+    color_tol: int = 24,
+    width_overlap_ratio: float = 0.1,
     slide_width_px: Optional[int] = None,
     slide_height_px: Optional[int] = None,
 ) -> List[dict]:
     """把同样式、x 左端对齐、y 垂直相邻的多行块合并为一个多行段落。
 
     条件（全部满足才合并）：
-    1. bold 相同、color 相同、font_size 差 ≤ `size_tol_pt`
+    1. bold 相同、color 每通道差 ≤ `color_tol`、font_size 差 ≤ `size_tol_pt`
+       （OCR 对近黑文字常给出 #232629 / #272D34 这类肉眼等价的微差色，
+       段落内行间字号也常被判成 15 / 16 的边界值，故适度放宽）
     2. 左端 x0 相差 ≤ `x_align_ratio × avg_height`（左对齐段落）
     3. 下一行 y0 - 上一行 y1 ≤ `line_gap_ratio × avg_height`（行距 ≤ 1 个字高）
     4. 两框水平区间有明显重叠（`重叠/较小宽度 ≥ width_overlap_ratio`），避免
@@ -255,7 +273,12 @@ def merge_vertical_paragraphs(
                 if cand["y0"] < last["y1"] - 1:
                     continue
                 # 样式一致
-                if not _same_style(last["blk"], cand["blk"], size_tol_pt=size_tol_pt):
+                if not _same_style(
+                    last["blk"],
+                    cand["blk"],
+                    size_tol_pt=size_tol_pt,
+                    color_tol=color_tol,
+                ):
                     continue
                 avg_h = (last["h"] + cand["h"]) / 2.0
                 # 左端对齐

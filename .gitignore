@@ -20,3 +20,4 @@ build/
 .cursor/
 pkgs/
 .codebuddy
+tmp/
