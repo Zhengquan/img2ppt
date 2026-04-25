@@ -92,11 +92,21 @@ def build_editable_pptx(
     for idx, (background_image, styled_blocks, img_w, img_h) in enumerate(slides_data):
         if progress_callback:
             progress_callback("export", idx + 1, total, "写入幻灯片")
-        scale_x = SLIDE_WIDTH_PX / max(1, img_w)
-        scale_y = SLIDE_HEIGHT_PX / max(1, img_h)
+
+        # —— 等比适配（contain）：统一缩放 + 居中偏移，防止背景图非等比拉伸 ——
+        # 用同一个 scale 换算背景图与所有文本框，保证二者相对位置不变
+        scale = min(
+            SLIDE_WIDTH_PX / max(1, img_w),
+            SLIDE_HEIGHT_PX / max(1, img_h),
+        )
+        drawn_w_px = img_w * scale
+        drawn_h_px = img_h * scale
+        offset_x_px = (SLIDE_WIDTH_PX - drawn_w_px) / 2.0
+        offset_y_px = (SLIDE_HEIGHT_PX - drawn_h_px) / 2.0
+
         slide = builder.add_blank_slide()
 
-        # 背景图：临时保存后插入并移到底层
+        # 背景图：临时保存后按等比缩放尺寸插入并居中，然后移到底层
         if isinstance(background_image, (str, Path)):
             bg_path = str(background_image)
             need_unlink = False
@@ -106,10 +116,16 @@ def build_editable_pptx(
             bg_path = fd.name
             need_unlink = True
         try:
+            # 像素按 dpi 换算成英寸
+            left_in = offset_x_px / dpi
+            top_in = offset_y_px / dpi
+            width_in = drawn_w_px / dpi
+            height_in = drawn_h_px / dpi
             pic = slide.shapes.add_picture(
-                bg_path, Inches(0), Inches(0),
-                width=Inches(builder.slide_width_inches),
-                height=Inches(builder.slide_height_inches),
+                bg_path,
+                Inches(left_in), Inches(top_in),
+                width=Inches(width_in),
+                height=Inches(height_in),
             )
             spTree = slide.shapes._spTree
             spTree.remove(pic._element)
@@ -132,24 +148,30 @@ def build_editable_pptx(
                 slide_height_px=img_h,
             )
 
+        # 内容区右下边界（slide 像素坐标系），用于裁切和判定上限
+        content_left_px = offset_x_px
+        content_top_px = offset_y_px
+        content_right_px = offset_x_px + drawn_w_px
+        content_bottom_px = offset_y_px + drawn_h_px
+
         for blk in effective_blocks:
             box = blk.get("box")
             text = (blk.get("text") or "").strip()
             if not box or not text:
                 continue
             x0, y0, x1, y1 = _box_bounds(box)
-            # 换算到 slide 像素坐标
-            bx0 = int(x0 * scale_x)
-            by0 = int(y0 * scale_y)
-            bx1 = int(x1 * scale_x)
-            by1 = int(y1 * scale_y)
-            # 2) 仅向右扩宽，不越页面右界，同时以原图宽度为硬上限避免超出背景
+            # 用同一个 scale + 居中偏移换算到 slide 像素坐标
+            bx0 = int(x0 * scale + offset_x_px)
+            by0 = int(y0 * scale + offset_y_px)
+            bx1 = int(x1 * scale + offset_x_px)
+            by1 = int(y1 * scale + offset_y_px)
+            # 2) 仅向右扩宽，不越内容区右边界（即原图右侧在 slide 上的映射位置）
             if text_pad_ratio and text_pad_ratio > 0:
                 pad = int((bx1 - bx0) * text_pad_ratio)
                 bx1 = bx1 + pad
-            # 用原图像素作为内容边界（背景图不可能比原图大）
-            max_content_width = int(img_w * scale_x)
-            bx1 = min(bx1, max_content_width)
+            bx1 = min(bx1, int(content_right_px))
+            # 纵向也别溢出内容区下边界（极端情况下保个底）
+            by1 = min(by1, int(content_bottom_px))
             bbox_slide = [bx0, by0, bx1, by1]
 
             text_style = _styled_block_to_text_style(blk)
