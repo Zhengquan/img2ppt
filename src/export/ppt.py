@@ -155,6 +155,10 @@ def build_editable_pptx(
         content_bottom_px = offset_y_px + drawn_h_px
 
         for blk in effective_blocks:
+            # 列表标号 / 项目符号在 merge 阶段已被打上 _skip_render=True：
+            # 这些视觉元素已在背景图里，重写为文本反而会大小不一致、字体错位。
+            if blk.get("_skip_render"):
+                continue
             box = blk.get("box")
             text = (blk.get("text") or "").strip()
             if not box or not text:

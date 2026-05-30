@@ -25,7 +25,115 @@ Step 2 — 跨行段落合并（`merge_vertical_paragraphs`）：
 """
 from __future__ import annotations
 
+import re
 from typing import List, Optional, Tuple
+
+
+# —— 列表标号 / 项目符号识别 ——
+# OCR 对装饰性的标号字符（01/02/1./①/•/●/■ 等）字号判定不稳，且这些字符
+# 通常已经在背景图里以视觉形式呈现；如果再被 PPTXBuilder 重写为文本框，
+# 大小不一致、字体不一致的问题就会暴露。我们对识别为"标号块"的 OCR 结果
+# 做两件事：
+# 1) 不参与同行/跨行段落合并（避免一个 "01" 把后面的标题拽歪）；
+# 2) 在 PPT 导出阶段直接跳过渲染（保留背景图中的原始视觉）。
+
+# 项目符号字符集合（无序列表）
+_BULLET_CHARS = "•●■▶◆◇○◯◦·*‣⁃▪▫►▸▹◾◽-—–"
+
+# 带圈数字（① ~ ⑳ 等）
+_CIRCLED_DIGIT_RANGES = [
+    ("\u2460", "\u2473"),  # ① ~ ⑳
+    ("\u2776", "\u277f"),  # ❶ ~ ❾
+    ("\u24eb", "\u24f4"),  # ⓫ ~ ⓴
+]
+
+# 半角/全角括号 + 句点 + 顿号 + 空白
+_TRAILING_LIST_PUNCT = ".．。、)）]］>>》】"
+
+# 罗马数字（小写 / 大写）
+_ROMAN_RE = re.compile(r"^[ivxlcdmIVXLCDM]{1,4}$")
+
+# 阿拉伯数字编号：1 / 1. / 1) / 01 / 02 / 03 / (1) 等
+_NUMERIC_LIST_RE = re.compile(r"^[\(（【\[]?\d{1,3}[\)）】\]\.．、]?$")
+
+# 中文数字编号：一 / 二 / 三 / 一、 / （一） 等
+_CHINESE_NUM_RE = re.compile(
+    r"^[\(（]?[一二三四五六七八九十百零〇]{1,4}[\)）、\.．]?$"
+)
+
+
+def _is_circled_digit(text: str) -> bool:
+    if len(text) != 1:
+        return False
+    for lo, hi in _CIRCLED_DIGIT_RANGES:
+        if lo <= text <= hi:
+            return True
+    return False
+
+
+def _is_list_marker(text: str) -> bool:
+    """判断一段 OCR 文本是否为"列表标号 / 项目符号"。
+
+    命中的块在合并阶段会被剔除（不参与合并），并在 PPT 导出阶段跳过渲染。
+    返回 True 时调用方应给该块打 `_skip_render=True`。
+
+    覆盖：
+    - 项目符号字符（• ● ■ ▶ ◆ ◦ · * - 等），单字符或多字符全为符号
+    - 阿拉伯数字编号：1 / 1. / 1) / 01 / 02 / (1) 等（最多 3 位）
+    - 带圈数字：① ~ ⑳、❶ ~ ❾、⓫ ~ ⓴
+    - 罗马数字：i / ii / iv / IV 等（≤4 字符）
+    - 中文数字编号：一、 / （二） / 三. 等
+    """
+    if not text:
+        return False
+    s = text.strip()
+    if not s:
+        return False
+    # 太长就不可能是孤立的标号
+    if len(s) > 6:
+        return False
+
+    # 1) 全部由项目符号字符构成
+    if all(ch in _BULLET_CHARS for ch in s):
+        return True
+
+    # 2) 单字符的带圈数字
+    if _is_circled_digit(s):
+        return True
+
+    # 3) 阿拉伯数字编号
+    if _NUMERIC_LIST_RE.match(s):
+        return True
+
+    # 4) 罗马数字（去掉可能的尾部点号）
+    s_no_punct = s.rstrip(_TRAILING_LIST_PUNCT)
+    if s_no_punct and _ROMAN_RE.match(s_no_punct):
+        return True
+
+    # 5) 中文数字编号
+    if _CHINESE_NUM_RE.match(s):
+        return True
+
+    return False
+
+
+def _split_list_markers(blocks: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """把命中列表标号的块从输入里剔除，并打 `_skip_render=True`。
+
+    返回 (剩余块, 被剔除的列表标号块)。被剔除的块会被原样追加回最终输出，
+    但带上 `_skip_render=True`，下游 PPT 渲染会跳过它们。
+    """
+    keep: List[dict] = []
+    skipped: List[dict] = []
+    for blk in blocks:
+        text = (blk.get("text") or "").strip()
+        if text and _is_list_marker(text):
+            new_blk = dict(blk)
+            new_blk["_skip_render"] = True
+            skipped.append(new_blk)
+        else:
+            keep.append(blk)
+    return keep, skipped
 
 
 def _box_bounds(box: List[List[float]]) -> Tuple[float, float, float, float]:
@@ -114,21 +222,27 @@ def merge_inline_blocks(
         table_row_gap_var_ratio: 判定"gap 均匀"的相对方差阈值。
 
     返回: 合并后的新 list；输入中缺少 box 或 text 的条目原样透传。
+    被识别为"列表标号 / 项目符号"的块会被打上 `_skip_render=True` 透传，
+    既不参与合并，也会在 PPT 导出阶段被跳过渲染。
     """
     if not styled_blocks:
         return list(styled_blocks)
 
+    # 先把"列表标号 / 项目符号"剔除：不参与合并，标记 _skip_render
+    remaining, list_marker_skipped = _split_list_markers(list(styled_blocks))
+
     # 拆成可合并候选 + 不可合并原样保留
     candidates: List[dict] = []
     passthrough: List[Tuple[int, dict]] = []
-    for idx, blk in enumerate(styled_blocks):
+    for idx, blk in enumerate(remaining):
         if not blk.get("box") or not (blk.get("text") or "").strip():
             passthrough.append((idx, blk))
             continue
         candidates.append(blk)
 
     if not candidates:
-        return list(styled_blocks)
+        # 注意把列表标号块也带回，保证调用方能感知 _skip_render 标记
+        return list(remaining) + list_marker_skipped
 
     # 预计算每个候选的 bounds + 高度
     enriched = []
@@ -215,11 +329,11 @@ def merge_inline_blocks(
     # 把 passthrough 保持相对原序并入（按原 idx 返回接近原来的顺序）
     # 简化处理：把合并结果先放前，再把 passthrough 追加在末尾；
     # PPT 绘制顺序只影响同页图层栈，保序对视觉基本无影响。
-    if not passthrough:
-        return merged
     result = list(merged)
     for _, blk in passthrough:
         result.append(blk)
+    # 列表标号块追加在末尾（带 _skip_render=True，下游会跳过）
+    result.extend(list_marker_skipped)
     return result
 
 
@@ -320,20 +434,25 @@ def merge_vertical_paragraphs(
        分隔线两侧不允许跨段合并（参数 `section_gap_ratio` = 分隔判据 / 中位 gap）
 
     输出的多行块 text 用 "\n" 连接，保留换行；`precise_poly` 用矩形外轮廓。
+    被识别为"列表标号 / 项目符号"的块会被打上 `_skip_render=True` 透传，
+    既不参与跨行段落合并，也会在 PPT 导出阶段被跳过渲染。
     """
     if not styled_blocks:
         return list(styled_blocks)
 
+    # 先剔除"列表标号 / 项目符号"，不参与段落合并
+    remaining, list_marker_skipped = _split_list_markers(list(styled_blocks))
+
     # 拆分可合并 vs 透传
     candidates: List[dict] = []
     passthrough: List[dict] = []
-    for blk in styled_blocks:
+    for blk in remaining:
         if not blk.get("box") or not (blk.get("text") or "").strip():
             passthrough.append(blk)
             continue
         candidates.append(blk)
     if not candidates:
-        return list(styled_blocks)
+        return list(remaining) + list_marker_skipped
 
     enriched = []
     for blk in candidates:
@@ -439,8 +558,8 @@ def merge_vertical_paragraphs(
         else:
             merged.append(_merge_paragraph_group([g["blk"] for g in group], group))
 
-    # 透传块追加在末尾，保序
-    return merged + passthrough
+    # 透传块追加在末尾，保序；列表标号块带 _skip_render=True 一并附加
+    return merged + passthrough + list_marker_skipped
 
 
 def _detect_section_dividers(

@@ -1,13 +1,77 @@
 #!/usr/bin/env python3
 """入口：--input image.png 或 file.pdf --output out.pptx"""
 import argparse
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # 保证从项目根运行时可找到 src
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+
+def _now_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _load_manifest(path: Path) -> dict:
+    """读取 run_manifest.json；不存在或损坏时返回空 dict。"""
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _save_manifest(path: Path, data: dict) -> None:
+    """原子写回 manifest（先写 .tmp 再 rename），失败时静默不抛出，避免影响主流程。"""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+    except OSError as e:
+        print(f"[warn] 写回 run-manifest 失败：{e}", file=sys.stderr)
+
+
+def _update_manifest_section(
+    manifest_path: "Path | None",
+    *,
+    status: str,
+    output: "Path | None" = None,
+    error: "str | None" = None,
+    started_at: "str | None" = None,
+) -> "str | None":
+    """更新 manifest 顶层的 `images_2_ppt` 段。返回 started_at 以便上层串联。"""
+    if manifest_path is None:
+        return started_at
+    data = _load_manifest(manifest_path)
+    section = data.get("images_2_ppt") if isinstance(data.get("images_2_ppt"), dict) else {}
+    now = _now_iso()
+    if started_at is None:
+        started_at = section.get("started_at") or now
+    section["status"] = status
+    section["started_at"] = started_at
+    section["updated_at"] = now
+    if status in ("succeeded", "failed"):
+        section["finished_at"] = now
+    if output is not None:
+        section["output"] = str(output)
+    if error is not None:
+        section["error"] = error
+    elif status == "succeeded":
+        section.pop("error", None)
+    data["images_2_ppt"] = section
+    data["updated_at"] = now
+    _save_manifest(manifest_path, data)
+    return started_at
 
 
 def _progress_callback_with_bar():
@@ -121,6 +185,16 @@ def main() -> None:
         help="OCR 引擎：auto(默认，优先腾讯)、tencent、baidu",
     )
     parser.add_argument(
+        "--run-manifest",
+        default=None,
+        help=(
+            "可选：上游 orchestrator 的 run_manifest.json 路径。"
+            "若指定，导出前/后会在该 JSON 顶层写入/更新 `images_2_ppt` 段，"
+            "记录 status/started_at/finished_at/output/error，便于跟踪整体流水线状态。"
+            "manifest 的其它字段不动；文件不存在时会按需创建父目录并新建。"
+        ),
+    )
+    parser.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="不输出处理进度",
@@ -154,23 +228,46 @@ def main() -> None:
 
     print(f"开始处理… OCR 引擎: {selected_engine}")
     print(f"字体: latin={font_normal}/{font_bold}  ea={font_ea_normal}/{font_ea_bold}")
-    run_pipeline(
-        raw_input,
-        pptx_path,
-        font_normal=font_normal,
-        font_bold=font_bold,
-        font_ea_normal=font_ea_normal,
-        font_ea_bold=font_ea_bold,
-        text_lang=args.text_lang,
-        text_alt_lang=args.text_alt_lang,
-        text_pad_ratio=args.text_pad_ratio,
-        width_safety=args.width_safety,
-        merge_textbox=not args.no_merge_textbox,
-        ocr_engine=args.ocr_engine,
-        pdf_output_path=args.pdf_output,
-        progress_callback=None if args.quiet else _progress_callback_with_bar(),
+
+    manifest_path = Path(args.run_manifest).expanduser() if args.run_manifest else None
+    started_at = _update_manifest_section(manifest_path, status="running", output=pptx_path)
+
+    try:
+        run_pipeline(
+            raw_input,
+            pptx_path,
+            font_normal=font_normal,
+            font_bold=font_bold,
+            font_ea_normal=font_ea_normal,
+            font_ea_bold=font_ea_bold,
+            text_lang=args.text_lang,
+            text_alt_lang=args.text_alt_lang,
+            text_pad_ratio=args.text_pad_ratio,
+            width_safety=args.width_safety,
+            merge_textbox=not args.no_merge_textbox,
+            ocr_engine=args.ocr_engine,
+            pdf_output_path=args.pdf_output,
+            progress_callback=None if args.quiet else _progress_callback_with_bar(),
+        )
+    except Exception as e:  # noqa: BLE001 - 失败也要写回 manifest
+        _update_manifest_section(
+            manifest_path,
+            status="failed",
+            output=pptx_path,
+            error=f"{type(e).__name__}: {e}",
+            started_at=started_at,
+        )
+        raise
+
+    _update_manifest_section(
+        manifest_path,
+        status="succeeded",
+        output=pptx_path,
+        started_at=started_at,
     )
     print(f"已生成: {pptx_path}")
+    if manifest_path is not None:
+        print(f"已更新 run-manifest: {manifest_path}")
 
 
 if __name__ == "__main__":
