@@ -71,18 +71,114 @@ def _is_circled_digit(text: str) -> bool:
     return False
 
 
+# 行首"标号前缀"识别：用于"标号 + 标题文字"这种 OCR 把整行识别成一个块的情况。
+# 命中时剥离前缀，但不跳过渲染——保留标题文字。
+#
+# 两种命中形态：
+# (A) 标号 + 空白(含全角) + 任意正文 -> 剥离前缀
+#     例：'1 对接信随行' -> '对接信随行'，'01. 简介' -> '简介'，'• 要点A' -> '要点A'
+# (B) 数字编号(必须 ≥ 2 位 或带尾标点) + 紧贴的中文/英文标题(无空格) -> 剥离前缀
+#     例：'01对接信随行' -> '对接信随行'，'1.建设技能市场' -> '建设技能市场'
+#     这样可以兼容 OCR 把数字+标题粘在一起的常见情况。
+#     注意只匹配 "01"/"02"/.../"1."/"1)" 这种带显著编号特征的，避免把 "1月份"、"3D" 等正常文本误剥。
+#
+# 中文数字 + 标点（一、二、三、）也允许无空格直接剥离；项目符号同样允许无空格。
+
+_LIST_PREFIX_PUNCT_RE = re.compile(
+    r"^("
+    r"\(?\d{1,3}[\)\.．、:：]"            # 数字 + 必须有尾部标点: 1. / 1) / 01: ...
+    r"|\(\d{1,3}\)"                       # (1)
+    r"|[\(（]?[一二三四五六七八九十百零〇]{1,4}[\)）、\.．:：]"  # 中文数字 + 标点
+    r"|[" + re.escape(_BULLET_CHARS) + r"]+"  # 项目符号
+    r")"
+)
+
+# 形态 A：标号 + 空白 + 任意正文
+_LIST_PREFIX_WITH_SPACE_RE = re.compile(
+    r"^("
+    r"\(?\d{1,3}[\)\.．、:：]?"
+    r"|[\(（]?[一二三四五六七八九十百零〇]{1,4}[\)）、\.．:：]?"
+    r"|[" + re.escape(_BULLET_CHARS) + r"]+"
+    r")[\s\u3000]+"
+)
+
+# 形态 B：纯数字标号 (如 01/02 两位以上 或 单数字 1) + 紧贴中文标题，无需空白
+# 必须紧跟一个中文字符，避免把 "1A"、"3D"、"4G" 等英数缩写误伤
+# 进一步：紧跟的中文不能是常见日期/量词单字（月年日次号期类种级等），
+# 避免把 "1月份"、"2年后" 误剥。
+_LIST_PREFIX_DIGIT_CN_RE = re.compile(
+    r"^(\d{1,3})(?=[\u4e00-\u9fff])"
+)
+_DIGIT_FOLLOW_BLACKLIST = set("月年日次号期类种级楼层届届岁倍点分秒克斤吨升毫")
+
+# OCR 常把无序列表的项目符号（• · ‧ ・ 等）误识别成行首的 "." / "," 等普通标点。
+# 这里识别"行首一个项目符号/被误识别的标点 + 紧跟中文正文"的形态，剥离该前缀。
+# 仅当后面紧跟中文字符时才剥离，避免误伤 ".NET" / ".5" / 英文缩写等正常文本。
+_OCR_BULLET_PREFIX_RE = re.compile(
+    r"^[.·•‧・,，、]+[\s\u3000]*(?=[\u4e00-\u9fff])"
+)
+
+
+def _split_list_prefix_text(text: str) -> Tuple[str, int]:
+    """剥离行首列表前缀，返回 (剥离后的正文, 前缀结束下标)。
+
+    若未命中前缀，返回 (原文本, 0)。前缀结束下标用于把 bbox 左边界右移，
+    只抹除/重写正文区域，保留原图里的项目符号或数字圆点。
+    """
+    if not text:
+        return text, 0
+    # 0) OCR 误识别的项目符号（行首 "." / "·" / "," 等 + 中文正文）
+    m = _OCR_BULLET_PREFIX_RE.match(text)
+    if m:
+        rest = text[m.end():].lstrip()
+        if rest:
+            return rest, m.end()
+    # 1) 标号 + 空白 + 正文
+    m = _LIST_PREFIX_WITH_SPACE_RE.match(text)
+    if m:
+        rest = text[m.end():].lstrip()
+        if rest:
+            return rest, m.end()
+    # 2) 标号 + 显式标点 (1./1)/(1)/一、 等)，后面可有可无空白
+    m = _LIST_PREFIX_PUNCT_RE.match(text)
+    if m:
+        rest = text[m.end():].lstrip()
+        if rest:
+            return rest, m.end()
+    # 3) 纯数字 + 紧贴中文标题：'01对接信随行' -> '对接信随行'
+    m = _LIST_PREFIX_DIGIT_CN_RE.match(text)
+    if m:
+        rest = text[m.end():]
+        # 黑名单保护：紧跟的首个中文是常见量词/日期单位时，不剥离
+        # 例：'1月份的工作' / '2年后' / '3次会议' 都不被剥离
+        if rest and rest[0] not in _DIGIT_FOLLOW_BLACKLIST:
+            return rest.lstrip(), m.end()
+    return text, 0
+
+
+def _strip_list_prefix(text: str) -> str:
+    """剥离行首的列表标号 / 项目符号前缀，返回剩余文本。
+
+    若整行就是一个标号（无后续正文），由 `_is_list_marker` 单独处理跳过渲染。
+    """
+    return _split_list_prefix_text(text)[0]
+
+
 def _is_list_marker(text: str) -> bool:
-    """判断一段 OCR 文本是否为"列表标号 / 项目符号"。
+    """判断一段 OCR 文本是否为"列表标号 / 项目符号"——即整段文字本身就是个标号。
 
     命中的块在合并阶段会被剔除（不参与合并），并在 PPT 导出阶段跳过渲染。
     返回 True 时调用方应给该块打 `_skip_render=True`。
 
     覆盖：
-    - 项目符号字符（• ● ■ ▶ ◆ ◦ · * - 等），单字符或多字符全为符号
+    - 项目符号字符（• ● ■ ▶ ◆ ◦ · 等），单字符或多字符全为符号
     - 阿拉伯数字编号：1 / 1. / 1) / 01 / 02 / (1) 等（最多 3 位）
     - 带圈数字：① ~ ⑳、❶ ~ ❾、⓫ ~ ⓴
-    - 罗马数字：i / ii / iv / IV 等（≤4 字符）
     - 中文数字编号：一、 / （二） / 三. 等
+
+    注：罗马数字（i/ii/IV）容易和图标里的孤立字母（V/C/I）混淆，
+    这里**不再**把任意 1~4 个 ivxlcdm 字母都当成标号；只匹配明确带尾部
+    标号字符（点/括号/顿号）的情况，避免误伤标题中的单字母图标。
     """
     if not text:
         return False
@@ -93,7 +189,7 @@ def _is_list_marker(text: str) -> bool:
     if len(s) > 6:
         return False
 
-    # 1) 全部由项目符号字符构成
+    # 1) 全部由项目符号字符构成（如 "•"、"●●"、"-" 等）
     if all(ch in _BULLET_CHARS for ch in s):
         return True
 
@@ -105,10 +201,15 @@ def _is_list_marker(text: str) -> bool:
     if _NUMERIC_LIST_RE.match(s):
         return True
 
-    # 4) 罗马数字（去掉可能的尾部点号）
-    s_no_punct = s.rstrip(_TRAILING_LIST_PUNCT)
-    if s_no_punct and _ROMAN_RE.match(s_no_punct):
-        return True
+    # 4) 罗马数字 + 必须带明确的尾部标号符号（避免把孤立大写字母 C/V/I 误判）
+    if len(s) >= 2:
+        s_no_punct = s.rstrip(_TRAILING_LIST_PUNCT)
+        if (
+            s_no_punct
+            and len(s_no_punct) < len(s)  # 必须真的有尾部标点被剥离
+            and _ROMAN_RE.match(s_no_punct)
+        ):
+            return True
 
     # 5) 中文数字编号
     if _CHINESE_NUM_RE.match(s):
@@ -117,22 +218,139 @@ def _is_list_marker(text: str) -> bool:
     return False
 
 
-def _split_list_markers(blocks: List[dict]) -> Tuple[List[dict], List[dict]]:
-    """把命中列表标号的块从输入里剔除，并打 `_skip_render=True`。
+# —— 图标内装饰字符识别 ——
+# 信息图里的图标（盾牌/齿轮/代码块等）内部常带有孤立的字母 / 符号（如 C、Y、W、</>），
+# OCR 会把它们识别成文本块。这些是图标的一部分，应保留在背景图上，不应重写为文本框
+# （重写会出现字体/大小不一致、错位、与图标重影等问题）。
+_ICON_SYMBOL_RE = re.compile(r"^[<>/{}\[\]()|\\~^`@#$%&*=+]+$")
 
-    返回 (剩余块, 被剔除的列表标号块)。被剔除的块会被原样追加回最终输出，
-    但带上 `_skip_render=True`，下游 PPT 渲染会跳过它们。
+
+def _is_icon_glyph(text: str) -> bool:
+    """判断一段 OCR 文本是否为"图标内的装饰字符"。
+
+    覆盖：
+    - 纯符号组合（如 "</>"、"<>"、"{}"），长度 ≤ 4
+    - 单个非数字字符（单字母 C/Y/W、单符号、单汉字如 "品" 等）——
+      单字符极少作为可编辑正文出现，多为图标 logo 字符；即便偶有误判，
+      也只是"保留原图"，视觉不丢失，仅损失该字符的可编辑性。
+
+    注：单个数字已由 `_is_list_marker`（阿拉伯数字编号）覆盖，这里不重复处理。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if len(s) <= 4 and _ICON_SYMBOL_RE.match(s):
+        return True
+    if len(s) == 1 and not s.isdigit():
+        return True
+    return False
+
+
+def _should_keep_in_background(text: str) -> bool:
+    """判断整个块是否应只保留在背景图上、不重写为文本框。
+
+    只覆盖"整块本身就是视觉元素"的场景：
+    - 孤立列表标号 / 项目符号（"01"、"•"、"①"、"一、" 等）
+    - 图标内装饰字符（"C"、"Y"、"</>"、"品" 等）
+
+    注意："标号 + 正文"同块时，不应整块保留；应只保留标号区域，正文继续转为可编辑文字。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    return _is_list_marker(s) or _is_icon_glyph(s)
+
+
+def _shift_block_left(blk: dict, prefix_len: int) -> dict:
+    """把 bbox 左边界右移到列表正文附近，只抹除/渲染正文区域。
+
+    OCR 经常把"项目符号/数字圆点 + 正文"识别成一个整体框。为了既保留原图上的
+    项目符号，又让正文可编辑，需要把框左边界略向右移动。这里按字符宽度与行高
+    共同估算，取较大值，兼容圆形数字标号比普通字符更宽的情况。
+    """
+    box = blk.get("box")
+    text = (blk.get("text") or "").strip()
+    if not box or not text or prefix_len <= 0:
+        return dict(blk)
+    x0, y0, x1, y1 = _box_bounds(box)
+    w = max(1.0, x1 - x0)
+    h = max(1.0, y1 - y0)
+    char_w = w / max(1, len(text))
+    shift = max(char_w * prefix_len, h * 0.9)
+    # 留至少 1px 宽度，避免异常窄框
+    new_x0 = min(x1 - 1.0, x0 + shift)
+    nb = dict(blk)
+    nb["box"] = _rect_to_box(new_x0, y0, x1, y1)
+    nb["precise_poly"] = nb["box"]
+    return nb
+
+
+def mark_background_blocks(blocks: List[dict]) -> List[dict]:
+    """在【去字重建之前】处理列表/图标视觉元素。
+
+    - 孤立标号、项目符号、图标字符：打 `_skip_render=True`，去字和导出都跳过，原样保留。
+    - "标号 + 正文"同块：剥离标号前缀、右移 bbox 左边界，只抹除并重写正文区域；
+      同时打 `_no_merge=True`，避免列表项被合并。
+
+    返回新列表（不修改入参）。
+    """
+    out: List[dict] = []
+    for blk in blocks:
+        if blk.get("_skip_render"):
+            out.append(blk)
+            continue
+        text = (blk.get("text") or "").strip()
+        if not text:
+            out.append(blk)
+            continue
+        if _should_keep_in_background(text):
+            nb = dict(blk)
+            nb["_skip_render"] = True
+            out.append(nb)
+            continue
+        stripped, prefix_len = _split_list_prefix_text(text)
+        if prefix_len > 0 and stripped and stripped != text:
+            nb = _shift_block_left(blk, prefix_len)
+            nb["text"] = stripped
+            nb["_no_merge"] = True
+            out.append(nb)
+            continue
+        out.append(blk)
+    return out
+
+
+def _split_list_markers(blocks: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """把孤立视觉元素从合并候选里剔除，并兜底处理列表前缀。
+
+    - `_skip_render=True` 或孤立标号/图标字符：剔除，不参与合并、不渲染。
+    - "标号 + 正文"同块：剥离前缀、右移 bbox，正文保留渲染但打 `_no_merge=True`。
+
+    返回 (剩余可合并/可渲染块, 被剔除的保留原图块)。
     """
     keep: List[dict] = []
     skipped: List[dict] = []
     for blk in blocks:
+        # 已在去字前标记保留原图 -> 直接剔除
+        if blk.get("_skip_render"):
+            skipped.append(blk)
+            continue
         text = (blk.get("text") or "").strip()
-        if text and _is_list_marker(text):
+        if not text:
+            keep.append(blk)
+            continue
+        if _should_keep_in_background(text):
             new_blk = dict(blk)
             new_blk["_skip_render"] = True
             skipped.append(new_blk)
-        else:
-            keep.append(blk)
+            continue
+        stripped, prefix_len = _split_list_prefix_text(text)
+        if prefix_len > 0 and stripped and stripped != text:
+            new_blk = _shift_block_left(blk, prefix_len)
+            new_blk["text"] = stripped
+            new_blk["_no_merge"] = True
+            keep.append(new_blk)
+            continue
+        keep.append(blk)
     return keep, skipped
 
 
@@ -235,7 +453,11 @@ def merge_inline_blocks(
     candidates: List[dict] = []
     passthrough: List[Tuple[int, dict]] = []
     for idx, blk in enumerate(remaining):
-        if not blk.get("box") or not (blk.get("text") or "").strip():
+        if (
+            not blk.get("box")
+            or not (blk.get("text") or "").strip()
+            or blk.get("_no_merge")  # 列表项：保留渲染但不参与合并
+        ):
             passthrough.append((idx, blk))
             continue
         candidates.append(blk)
@@ -447,7 +669,11 @@ def merge_vertical_paragraphs(
     candidates: List[dict] = []
     passthrough: List[dict] = []
     for blk in remaining:
-        if not blk.get("box") or not (blk.get("text") or "").strip():
+        if (
+            not blk.get("box")
+            or not (blk.get("text") or "").strip()
+            or blk.get("_no_merge")  # 列表项：保留渲染但不参与合并
+        ):
             passthrough.append(blk)
             continue
         candidates.append(blk)

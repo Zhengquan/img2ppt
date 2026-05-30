@@ -9,6 +9,7 @@ from .extract.ocr import run_ocr, resolve_ocr_engine
 from .extract.style import infer_styles
 from .remove_text.design_reconstruction import reconstruct_background
 from .export.ppt import build_editable_pptx
+from .export.merge_blocks import mark_background_blocks
 from .utils.fonts import default_fonts
 
 
@@ -44,6 +45,10 @@ def process_one_image(
     ocr_result = run_ocr(image, ocr_engine=ocr_engine)
     report("样式推断")
     styled = infer_styles(image, ocr_result)
+    # 在去字重建之前，标记"应保留在背景图"的块（列表标号 / 项目符号 / 图标字符 /
+    # 带标号前缀的列表项）：这些块打 _skip_render=True，去字重建会跳过它们的区域，
+    # 从而原样保留在背景图上，避免"被抹掉又不渲染、导致视觉丢失"。
+    styled = mark_background_blocks(styled)
     report("去字重建")
     cleaned = reconstruct_background(image, styled)
     return cleaned, styled

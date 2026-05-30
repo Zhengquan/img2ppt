@@ -218,6 +218,9 @@ def reconstruct_background(
 
     polys = []
     for b in styled_blocks:
+        # 标记为保留原图的块（列表标号 / 项目符号 / 图标字符）不抹除，原样留在背景图
+        if b.get("_skip_render"):
+            continue
         if b.get("precise_poly"):
             polys.append(b["precise_poly"])
         elif b.get("box"):
