@@ -265,8 +265,12 @@ def _shift_block_left(blk: dict, prefix_len: int) -> dict:
     """把 bbox 左边界右移到列表正文附近，只抹除/渲染正文区域。
 
     OCR 经常把"项目符号/数字圆点 + 正文"识别成一个整体框。为了既保留原图上的
-    项目符号，又让正文可编辑，需要把框左边界略向右移动。这里按字符宽度与行高
-    共同估算，取较大值，兼容圆形数字标号比普通字符更宽的情况。
+    项目符号，又让正文可编辑，需要把框左边界略向右移动。
+
+    关键：右移量要"宁可偏左一点"。序号与正文之间通常有视觉间隙，因此在按字符宽
+    估出的序号宽度基础上，再向左回退一个安全余量（落在间隙里）。这样能保证正文
+    左缘被完整抹除/覆盖（不残留半个原字），又不会吃掉序号本体——修复"有序号时
+    背景遮盖不完整"的问题。
     """
     box = blk.get("box")
     text = (blk.get("text") or "").strip()
@@ -276,7 +280,11 @@ def _shift_block_left(blk: dict, prefix_len: int) -> dict:
     w = max(1.0, x1 - x0)
     h = max(1.0, y1 - y0)
     char_w = w / max(1, len(text))
-    shift = max(char_w * prefix_len, h * 0.9)
+    # 序号宽度估计：字符宽 × 前缀字符数，并对窄字符给一个温和下限（不再用 0.9h 这种偏大的值）
+    est_prefix = max(char_w * prefix_len, h * 0.5)
+    # 向左回退安全余量：落在序号与正文之间的间隙，确保正文左缘被完整覆盖
+    backoff = max(char_w * 0.6, h * 0.2)
+    shift = max(0.0, est_prefix - backoff)
     # 留至少 1px 宽度，避免异常窄框
     new_x0 = min(x1 - 1.0, x0 + shift)
     nb = dict(blk)

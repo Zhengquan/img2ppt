@@ -185,6 +185,16 @@ def main() -> None:
         help="OCR 引擎：auto(默认，优先腾讯)、tencent、baidu",
     )
     parser.add_argument(
+        "--slide-size-mode",
+        default="widescreen",
+        choices=["widescreen", "native"],
+        help=(
+            "PPT 页面尺寸模式："
+            "widescreen=固定 16:9，保持现有行为（默认）；"
+            "native=单张图片场景下严格匹配输入图片尺寸，适合海报等需要 1:1 文字调整的场景"
+        ),
+    )
+    parser.add_argument(
         "--run-manifest",
         default=None,
         help=(
@@ -247,6 +257,7 @@ def main() -> None:
             merge_textbox=not args.no_merge_textbox,
             ocr_engine=args.ocr_engine,
             pdf_output_path=args.pdf_output,
+            slide_size_mode=args.slide_size_mode,
             progress_callback=None if args.quiet else _progress_callback_with_bar(),
         )
     except Exception as e:  # noqa: BLE001 - 失败也要写回 manifest

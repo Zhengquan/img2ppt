@@ -61,6 +61,8 @@ def build_editable_pptx(
     dpi: int = 96,
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
     *,
+    slide_width_px: int = SLIDE_WIDTH_PX,
+    slide_height_px: int = SLIDE_HEIGHT_PX,
     font_normal: str = "Tencent Sans W3",
     font_bold: str = "Tencent Sans W7",
     font_ea_normal: str = "腾讯字体 W3",
@@ -85,7 +87,7 @@ def build_editable_pptx(
     - 每个 run 同时写入西文/东亚字体与 lang/altLang，避免中英文系统字体回退与拼写误报
     """
     builder = PPTXBuilder()
-    builder.setup_presentation_size(SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX, dpi=dpi)
+    builder.setup_presentation_size(slide_width_px, slide_height_px, dpi=dpi)
     builder.create_presentation()
     total = len(slides_data)
 
@@ -95,14 +97,15 @@ def build_editable_pptx(
 
         # —— 等比适配（contain）：统一缩放 + 居中偏移，防止背景图非等比拉伸 ——
         # 用同一个 scale 换算背景图与所有文本框，保证二者相对位置不变
+        # native 模式下 slide 尺寸 == 图片尺寸，scale 自然为 1、offset 为 0
         scale = min(
-            SLIDE_WIDTH_PX / max(1, img_w),
-            SLIDE_HEIGHT_PX / max(1, img_h),
+            slide_width_px / max(1, img_w),
+            slide_height_px / max(1, img_h),
         )
         drawn_w_px = img_w * scale
         drawn_h_px = img_h * scale
-        offset_x_px = (SLIDE_WIDTH_PX - drawn_w_px) / 2.0
-        offset_y_px = (SLIDE_HEIGHT_PX - drawn_h_px) / 2.0
+        offset_x_px = (slide_width_px - drawn_w_px) / 2.0
+        offset_y_px = (slide_height_px - drawn_h_px) / 2.0
 
         slide = builder.add_blank_slide()
 

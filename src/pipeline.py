@@ -54,6 +54,44 @@ def process_one_image(
     return cleaned, styled
 
 
+def _resolve_slide_size_px(
+    images: list[Image.Image],
+    slide_size_mode: str,
+    dpi: int = 96,
+) -> tuple[int, int]:
+    """
+    根据 slide_size_mode 决定 PPT 逻辑画布尺寸（像素）。
+
+    - widescreen: 固定 16:9 (1280×720)，保持现有行为。
+    - native: 严格匹配单张输入图片尺寸，适合海报；多页输入直接报错。
+    """
+    from .export.ppt import SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX
+
+    if slide_size_mode == "widescreen":
+        return SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX
+
+    if slide_size_mode == "native":
+        if len(images) != 1:
+            raise ValueError(
+                "--slide-size-mode native 仅支持单张图片输入。"
+                "海报模式要求 PPT 页面尺寸严格匹配唯一输入图片尺寸；"
+                "多页 PDF 或图片目录请使用默认 widescreen 模式。"
+            )
+        img = images[0]
+        w_px, h_px = img.width, img.height
+        # PowerPoint 单页最大约 56 英寸，超限会触发底层缩放，破坏 1:1 语义
+        max_inches = 56.0
+        if w_px / dpi > max_inches or h_px / dpi > max_inches:
+            raise ValueError(
+                f"--slide-size-mode native 下输入图片尺寸过大（{w_px}x{h_px}px），"
+                f"按 {dpi} DPI 换算会超过 PowerPoint 最大页面尺寸 {max_inches} 英寸。"
+                "请先缩小图片尺寸，或使用默认 widescreen 模式。"
+            )
+        return w_px, h_px
+
+    raise ValueError(f"未知 slide_size_mode: {slide_size_mode}")
+
+
 def run_pipeline(
     input_path: Union[str, Path],
     output_path: Union[str, Path],
@@ -68,6 +106,7 @@ def run_pipeline(
     merge_textbox: bool = True,
     ocr_engine: str = "auto",
     pdf_output_path: Optional[Union[str, Path]] = None,
+    slide_size_mode: str = "widescreen",
     progress_callback: Optional[Callable[[str, int, int, str], None]] = None,
 ) -> None:
     """
@@ -108,6 +147,9 @@ def run_pipeline(
         report("load", 1, 1, f"已加载 {n} 页")
         report("load", 1, 1, f"OCR 引擎: {selected_engine}")
 
+        # 根据尺寸模式决定 PPT 逻辑画布尺寸
+        slide_width_px, slide_height_px = _resolve_slide_size_px(images, slide_size_mode)
+
         if resolved_input.is_dir():
             default_pdf = Path(output_path).with_suffix(".pdf")
             pdf_path = Path(pdf_output_path) if pdf_output_path else default_pdf
@@ -143,6 +185,8 @@ def run_pipeline(
             text_pad_ratio=text_pad_ratio,
             width_safety=width_safety,
             merge_textbox=merge_textbox,
+            slide_width_px=slide_width_px,
+            slide_height_px=slide_height_px,
         )
         report("export", n, n, "写入完成")
     finally:

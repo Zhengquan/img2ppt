@@ -137,11 +137,23 @@ def _analyze_region_type(
     return "complex", {"fallback_color": tuple(median_color.tolist())}
 
 
+def _build_dilate_kernel(dilate_x: int, dilate_y: int):
+    """构造水平/垂直独立的矩形膨胀核。
+
+    垂直方向通常需要比水平方向更小，避免涂抹块越过行间、吃到上下相邻文本，
+    造成视觉上的“高度溢出”。
+    """
+    kx = max(0, int(dilate_x))
+    ky = max(0, int(dilate_y))
+    return cv2.getStructuringElement(cv2.MORPH_RECT, (kx * 2 + 1, ky * 2 + 1))
+
+
 def _fill_solid(
     image: np.ndarray,
     poly: List[List[float]],
     color: Tuple[int, int, int],
-    dilate: int = 2,
+    dilate_x: int = 2,
+    dilate_y: int = 1,
 ) -> None:
     """用纯色填充文字区域"""
     pts = np.array([[int(round(p[0])), int(round(p[1]))] for p in poly], dtype=np.int32)
@@ -150,8 +162,8 @@ def _fill_solid(
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [pts], 255)
 
-    if dilate > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate * 2 + 1, dilate * 2 + 1))
+    if dilate_x > 0 or dilate_y > 0:
+        kernel = _build_dilate_kernel(dilate_x, dilate_y)
         mask = cv2.dilate(mask, kernel)
 
     image[mask > 0] = color
@@ -163,7 +175,8 @@ def _fill_gradient(
     direction: str,
     start_color: Tuple[int, int, int],
     end_color: Tuple[int, int, int],
-    dilate: int = 2,
+    dilate_x: int = 2,
+    dilate_y: int = 1,
 ) -> None:
     """用渐变填充文字区域"""
     h, w = image.shape[:2]
@@ -177,8 +190,8 @@ def _fill_gradient(
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillPoly(mask, [pts], 255)
 
-    if dilate > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate * 2 + 1, dilate * 2 + 1))
+    if dilate_x > 0 or dilate_y > 0:
+        kernel = _build_dilate_kernel(dilate_x, dilate_y)
         mask = cv2.dilate(mask, kernel)
 
     if direction == "horizontal":
@@ -201,6 +214,7 @@ def reconstruct_background(
     image: Union[Image.Image, np.ndarray],
     styled_blocks: List[dict],
     dilate: int = 3,
+    dilate_y: Union[int, None] = 1,
 ) -> Image.Image:
     """
     设计语义分层重建：根据背景类型选择重建方法。
@@ -208,6 +222,12 @@ def reconstruct_background(
     - 纯色 → 直接填充
     - 渐变 → 拟合渐变重绘
     - 复杂纹理 → 近似色填充（不调用任何深度学习 inpainting）
+
+    膨胀量：
+    - dilate: 水平方向膨胀像素，覆盖字形左右抗锯齿边缘。
+    - dilate_y: 垂直方向膨胀像素；默认远小于水平（仅 1px），避免涂抹块
+      越过行间、吃到上下相邻文本，导致涂抹区域高度溢出。传 None 时退化为
+      与 dilate 相同（旧行为）。
     """
     if isinstance(image, Image.Image):
         arr = np.array(image.convert("RGB")).copy()
@@ -215,6 +235,9 @@ def reconstruct_background(
         arr = image.copy()
 
     h, w = arr.shape[:2]
+
+    dilate_x = dilate
+    dy = dilate if dilate_y is None else dilate_y
 
     polys = []
     for b in styled_blocks:
@@ -235,7 +258,7 @@ def reconstruct_background(
         region_type, params = _analyze_region_type(arr, poly)
 
         if region_type == "solid":
-            _fill_solid(arr, poly, params["color"], dilate=dilate)
+            _fill_solid(arr, poly, params["color"], dilate_x=dilate_x, dilate_y=dy)
         elif region_type == "gradient":
             _fill_gradient(
                 arr,
@@ -243,12 +266,13 @@ def reconstruct_background(
                 params["direction"],
                 params["start_color"],
                 params["end_color"],
-                dilate=dilate,
+                dilate_x=dilate_x,
+                dilate_y=dy,
             )
         else:
             complex_polys.append((poly, params.get("fallback_color", (128, 128, 128))))
 
     for poly, fallback_color in complex_polys:
-        _fill_solid(arr, poly, fallback_color, dilate=dilate)
+        _fill_solid(arr, poly, fallback_color, dilate_x=dilate_x, dilate_y=dy)
 
     return Image.fromarray(arr)
