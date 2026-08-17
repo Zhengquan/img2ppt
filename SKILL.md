@@ -104,19 +104,32 @@ pip install -r requirements.txt
 | 输入 | 命令 |
 |------|------|
 | 单张图 | `python cli.py --input image.png --output out.pptx` |
-| 图片目录 | `python cli.py --input images_dir --output out.pptx`（按文件名排序；会生成合并 PDF + 一个 pptx） |
+| 图片目录 | `python cli.py --input images_dir --output out.pptx`（按**自然排序（数字感知）**；会生成合并 PDF + 一个 pptx；**先读下面「图片目录命名与页序守卫」**） |
 | PDF | `python cli.py --input doc.pdf --output out.pptx` |
 | **图片或 PDF 直链** | `python cli.py --input "http://example.com/slide.png" --output out.pptx`（`http` / `https` 均可；自动下载；须为**直接文件 URL**，不能是需登录的 HTML 预览页） |
 
 `-i` 为 URL 且未指定 `-o` 时，默认输出名为 URL 路径中的文件名（stem）+ `.pptx`，若无有效文件名则用 `remote_input.pptx`（生成在当前工作目录）。
 
+### 图片目录命名与页序守卫（多页转换必读）
+
+目录输入时**页序 = 文件名的自然排序**（`slide-2` 排在 `slide-10` 前）。页序错乱是目录转换最常见、代价最高的事故（OCR 额度烧完才发现），因此：
+
+- **命名规范**：目录内图片必须统一为**同一前缀 + 连续数字编号**（推荐 `slide-001.png … slide-014.png`）。**手工补图 / 从其他工具保存的图，必须先改名纳入该编号体系，禁止以原名混放**（如 `ChatGPT Image xxx.png` 混进 `slide-XXX.png` 会全部排在前面，页序整体错乱）。
+- **转换前先 dry-run**：`python cli.py -i images_dir --dry-run`。它会打印「页码 ← 文件名」映射并做命名健康检查（混合命名 / 多种编号前缀 / 编号缺口 / 编号重复），**不调 OCR、不需要密钥**。
+- **页数门禁**：知道预期页数时加 `--expected-pages N`（如大纲 14 页就传 14）；页数不符会以退出码 `3` 在 OCR 之前失败。
+- 正式转换时，加载阶段也会打印页序映射与命名警告；请确认映射正确后再让其进入 OCR。
+
 常用参数：
 
 - `-i` / `-o`：输入、输出 .pptx
-- `--font-normal` / `--font-bold`：西文（latin）正文 / 强调字体（默认 `Tencent Sans W3` / `Tencent Sans W7`）
-- `--font-ea-normal` / `--font-ea-bold`：东亚（中文）正文 / 强调字体（默认 `腾讯字体 W3` / `腾讯字体 W7`），Windows/中文 WPS 下决定中文实际显示字体
+- `--dry-run`：只列页序映射 + 命名检查，不调 OCR、不生成文件
+- `--expected-pages N`：期望页数校验，不符退出码 `3`（在 OCR 之前失败）
+- `--no-qa-report`：关闭 QA 报告输出（默认在输出旁写 `<output>.qa.json`，含页序映射、每页文本块统计、低置信文本清单）
+- `--font-normal` / `--font-bold`：西文（latin）正文 / 强调字体；不指定时按 **OCR 识别出的内容语言**自适应（中文内容→`腾讯字体 W3/W7`，英文内容→`TencentSans W3/W7`），不受运行 shell 的 locale 影响
+- `--font-ea-normal` / `--font-ea-bold`：东亚（中文）正文 / 强调字体（自适应规则同上），Windows/中文 WPS 下决定中文实际显示字体
 - `--text-lang` / `--text-alt-lang`：文本 run 的主/副语言标签（默认 `zh-CN` / `en-US`），避免英文环境下中文被打上拼写检查的红色波浪线
 - `--text-pad-ratio`：文本框向右扩宽比例（默认 `0.08`，防止贴边折行；`0` 关闭扩宽）
+- `--slide-size-mode`：`auto`（默认，按输入中占比最高的画幅建立统一画布）、`widescreen`（固定 16:9）或 `native`（单页严格匹配输入尺寸）。QA 会标出因混合画幅而保留留白的页面。
 - `--no-merge-textbox`：关闭同行短文本框合并（默认开启合并，能把被 OCR 切碎的同行文字拼回一个文本框）
 - `--ocr-engine`：`auto|tencent|baidu`（默认 `auto`，优先腾讯）
 - `-q`：安静模式
@@ -128,6 +141,18 @@ pip install -r requirements.txt
 1. **OCR + 样式**：云端 OCR（默认腾讯，兼容百度），加粗/颜色/字号推断  
 2. **去字**：设计语义分层重建（纯色/渐变重绘，复杂背景用近似色填充，无深度学习模型）  
 3. **导出**：无字底图 + bbox 文本框 → .pptx（PPTXBuilder，见 banana-slides）
+
+## 转换结果自检（QA 报告）
+
+每次转换默认在输出旁写 `<output>.qa.json`，终端同时打印 QA 摘要。报告包含：
+
+- `page_mapping`：页码 ↔ 来源文件名（核对页序是否符合预期）；
+- `naming_warnings`：命名健康检查结果（混合命名 / 编号缺口 / 编号重复）；
+- `pages[].text_blocks / rendered_blocks / kept_in_background_blocks`：每页文本块总数、转为可编辑文本框的数量、保留在背景图的数量（列表标号 / 图标字符等）；
+- `pages[].low_confidence_blocks`：OCR 置信度 < 0.85 的文本清单——**这些是最可能识别错误的文本，交付前应优先人工核对**（如错字、乱码、logo 内文字被误识别）。
+- `pages[].fit`：源图尺寸、缩放比例与等比留白；`letterboxed=true` 表示该页画幅与整套 PPT 画布不同。
+
+退出码约定：`0` 成功；`2` 配置/输入错误（含 OCR 密钥未配置）；`3` 页数校验失败或输入内容类错误（在 OCR 之前失败，不消耗调用额度）。
 
 ## 为人类开发者
 

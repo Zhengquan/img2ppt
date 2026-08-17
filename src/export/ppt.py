@@ -55,6 +55,46 @@ def _box_bounds(box: List[List[float]]) -> tuple:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+def _separate_close_vertical_blocks(blocks: List[dict]) -> List[dict]:
+    """修正 OCR 外接框造成的轻微同列文本重叠。
+
+    OCR 的字符外接框经常上下多取几像素；相邻列表项本来有间隔，也可能
+    在 bbox 层面发生 1--3px 重叠。PPT 文本框按这些边界摆放时，字体的
+    上下出血会让两项视觉上粘连。只处理小重叠、同列且明显水平重合的块，
+    以免干扰刻意叠放的图形文字。
+    """
+    indexed = []
+    for index, blk in enumerate(blocks):
+        if blk.get("_skip_render") or not blk.get("box") or not (blk.get("text") or "").strip():
+            continue
+        x0, y0, x1, y1 = _box_bounds(blk["box"])
+        indexed.append((index, x0, y0, x1, y1))
+
+    out = list(blocks)
+    placed = []
+    for index, x0, y0, x1, y1 in sorted(indexed, key=lambda row: (row[2], row[1])):
+        height = max(1.0, y1 - y0)
+        shift = 0.0
+        for _, px0, py0, px1, py1 in placed:
+            overlap_y = py1 - (y0 + shift)
+            if overlap_y <= 0 or overlap_y > 0.25 * min(height, max(1.0, py1 - py0)):
+                continue
+            overlap_x = max(0.0, min(x1, px1) - max(x0, px0))
+            if overlap_x / max(1.0, min(x1 - x0, px1 - px0)) < 0.6:
+                continue
+            shift = max(shift, overlap_y + 1.0)
+        if shift:
+            nb = dict(out[index])
+            nb["box"] = [[x, y + shift] for x, y in nb["box"]]
+            if nb.get("precise_poly"):
+                nb["precise_poly"] = [[x, y + shift] for x, y in nb["precise_poly"]]
+            out[index] = nb
+            y0 += shift
+            y1 += shift
+        placed.append((index, x0, y0, x1, y1))
+    return out
+
+
 def build_editable_pptx(
     slides_data: List[Tuple[Image.Image, List[dict], int, int]],
     output_path: Union[str, Path],
@@ -150,6 +190,9 @@ def build_editable_pptx(
                 slide_width_px=img_w,
                 slide_height_px=img_h,
             )
+        # OCR bbox 的微小垂直重叠会让相邻列表项在 PowerPoint 中擦边或
+        # 叠字；仅在导出定位阶段轻量拉开，不改变去字区域。
+        effective_blocks = _separate_close_vertical_blocks(effective_blocks)
 
         # 内容区右下边界（slide 像素坐标系），用于裁切和判定上限
         content_left_px = offset_x_px
@@ -202,6 +245,7 @@ def build_editable_pptx(
                     text_alt_lang=text_alt_lang,
                     expand_ratio=0.0,  # bbox 外扩已在上方 text_pad_ratio 处理
                     width_safety=width_safety,
+                    bullet_char=blk.get("_bullet_char"),  # 圆点列表项 → 原生 bullet
                 )
             except Exception as e:
                 import logging

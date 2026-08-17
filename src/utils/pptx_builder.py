@@ -177,15 +177,49 @@ class PPTXBuilder:
         dpi = dpi or self.DEFAULT_DPI
         return pixels / dpi
 
+    # 全角标点：在 CJK 字体里 advance ≈ 1em，估算时不能按 0.5em 算，
+    # 否则含 "，、「」" 的句子宽度被低估 ~10%+，字号反推偏大导致临界折行。
+    _FULLWIDTH_PUNCT = frozenset(
+        "，。、；：？！「」『』【】《》〈〉（）［］｛｝—…‥·￥"
+        "＂＇〃〝〞﹏﹑﹔﹕﹖﹗＃＆＊＋－＝＜＞＼／"
+    )
+
+    @classmethod
+    def _estimate_line_width_pt(cls, line: str, font_size_pt: float) -> float:
+        """估算单行文本宽度（pt）。无精确字体文件时的回退路径。
+
+        宽度权重：CJK 表意文字与全角标点 1.0em；大写字母/数字 0.6em；
+        空格 0.35em；其余（小写、半角符号）0.5em。
+        """
+        units = 0.0
+        for c in line:
+            if (
+                "\u4e00" <= c <= "\u9fff"
+                or "\u3040" <= c <= "\u30ff"
+                or "\uac00" <= c <= "\ud7af"
+                or c in cls._FULLWIDTH_PUNCT
+            ):
+                units += 1.0
+            elif c.isupper() or c.isdigit():
+                units += 0.6
+            elif c == " ":
+                units += 0.35
+            else:
+                units += 0.5
+        return units * font_size_pt
+
     def calculate_font_size(
         self, bbox: List[int], text: str, text_level: Any = None, dpi: int = None,
         width_safety: float = 0.96,
+        width_reserved_em: float = 0.0,
     ) -> float:
         """根据 bbox 和文本反推字号。
 
         width_safety: 可用宽度系数（<=1.0）。用于在 OCR bbox 宽度比真实
         glyph advance 略紧的情况下，给字号再打点保险，避免临界折行。
         默认 0.96（约 4% 余量），极端缩窄可调到 0.90。
+        width_reserved_em: 每行额外预留的宽度（em 单位），用于原生 bullet 的
+        悬挂缩进区（bullet 本身也占行宽，不预留会导致列表项临界折行）。
         """
         dpi = dpi or self.DEFAULT_DPI
         width_px = bbox[2] - bbox[0]
@@ -202,6 +236,10 @@ class PPTXBuilder:
         best_size = self.MIN_FONT_SIZE
         for font_size in range(int(self.MAX_FONT_SIZE), int(self.MIN_FONT_SIZE) - 1, -1):
             font_size = float(font_size)
+            # 悬挂缩进区（原生 bullet）也占行宽
+            eff_width_pt = usable_width_pt - width_reserved_em * font_size
+            if eff_width_pt <= 0:
+                continue
             lines = text.split("\n")
             total_required_lines = 0
             for line in lines:
@@ -213,16 +251,8 @@ class PPTXBuilder:
                     if line_width_pt is None:
                         use_precise = False
                 if not use_precise:
-                    cjk_count = sum(
-                        1
-                        for c in line
-                        if "\u4e00" <= c <= "\u9fff"
-                        or "\u3040" <= c <= "\u30ff"
-                        or "\uac00" <= c <= "\ud7af"
-                    )
-                    non_cjk_count = len(line) - cjk_count
-                    line_width_pt = (cjk_count * 1.0 + non_cjk_count * 0.5) * font_size
-                lines_needed = max(1, -(-int(line_width_pt) // int(usable_width_pt)))
+                    line_width_pt = self._estimate_line_width_pt(line, font_size)
+                lines_needed = max(1, -(-int(line_width_pt) // int(eff_width_pt)))
                 total_required_lines += lines_needed
             line_height_pt = font_size * 1.0
             total_height_pt = total_required_lines * line_height_pt
@@ -263,6 +293,23 @@ class PPTXBuilder:
         if text_alt_lang:
             rPr.set("altLang", text_alt_lang)
 
+    @staticmethod
+    def _apply_bullet_char(paragraph, char: str, font_size_pt: float, font_typeface: Optional[str]) -> None:
+        """把段落设为原生项目符号（buChar + 悬挂缩进）。
+
+        - marL = 1.1em、indent = -1.1em：bullet 挂在段落左缘，正文与折行
+          都对齐到 1.1em 处（ wrapped 行不会顶回 bullet 下面）。
+        - buFont 用正文字体，保证 bullet 与正文同族同号，不会错位。
+        """
+        pPr = paragraph._p.get_or_add_pPr()
+        mar_l = int(round(1.1 * font_size_pt * 12700))  # pt → EMU
+        pPr.set("marL", str(mar_l))
+        pPr.set("indent", str(-mar_l))
+        bu_font = etree.SubElement(pPr, qn("a:buFont"))
+        bu_font.set("typeface", font_typeface or "Arial")
+        bu_char = etree.SubElement(pPr, qn("a:buChar"))
+        bu_char.set("char", char)
+
     def add_text_element(
         self,
         slide,
@@ -278,6 +325,7 @@ class PPTXBuilder:
         text_alt_lang: Optional[str] = "en-US",
         expand_ratio: float = 0.0,
         width_safety: float = 0.96,
+        bullet_char: Optional[str] = None,
     ):
         dpi = dpi or self.DEFAULT_DPI
         has_colored_segments = (
@@ -312,7 +360,11 @@ class PPTXBuilder:
             return s.replace("·", "•", 1) if s.lstrip().startswith("·") else s
 
         actual_text = replace_some_chars(actual_text)
-        font_size = self.calculate_font_size(bbox, actual_text, text_level, dpi, width_safety=width_safety)
+        font_size = self.calculate_font_size(
+            bbox, actual_text, text_level, dpi,
+            width_safety=width_safety,
+            width_reserved_em=1.1 if bullet_char else 0.0,
+        )
         effective_align = align
         if text_style and getattr(text_style, "text_alignment", None):
             effective_align = text_style.text_alignment
@@ -389,6 +441,15 @@ class PPTXBuilder:
         # 多段：每段都要应用对齐
         for p in text_frame.paragraphs:
             p.alignment = align_val
+
+        # 原生项目符号：圆点与正文同字体同字号，悬挂缩进对齐折行
+        if bullet_char and text_frame.paragraphs:
+            self._apply_bullet_char(
+                text_frame.paragraphs[0],
+                bullet_char,
+                font_size,
+                chosen_ea or chosen_latin,
+            )
 
     def add_image_element(self, slide, image_path: str, bbox: List[int], dpi: int = None):
         dpi = dpi or self.DEFAULT_DPI

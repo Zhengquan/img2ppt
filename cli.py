@@ -79,9 +79,17 @@ def _progress_callback_with_bar():
     from tqdm import tqdm
 
     bar = None
+    load_counted = False  # load 阶段只计 1 步（引擎提示 / PDF 合并等消息不计步）
 
     def _cb(phase: str, current: int, total: int, message: str) -> None:
-        nonlocal bar
+        nonlocal bar, load_counted
+        # 多行消息（页序映射 / 命名警告）走整段打印，不占用进度条
+        if "\n" in message or message.startswith("[命名警告]"):
+            if bar:
+                bar.write(message)
+            else:
+                print(message)
+            return
         if phase == "load":
             if "已加载" in message and total == 1:
                 parts = message.split()
@@ -89,14 +97,20 @@ def _progress_callback_with_bar():
                 total_steps = 1 + 4 * n
                 bar = tqdm(total=total_steps, unit="步", ncols=100, desc="处理进度", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} {postfix}")
             if bar:
-                bar.update(1)
+                if not load_counted:
+                    bar.update(1)
+                    load_counted = True
                 bar.set_postfix_str(message)
         elif phase == "page":
             if bar:
                 bar.update(1)
                 bar.set_postfix_str(f"第 {current}/{total} 页 - {message}" if total > 1 else message)
         elif phase == "export":
-            if current == 0 and "开始" in message:
+            if message.startswith(("字体:", "QA 报告")):
+                # 信息性消息：只更新 postfix，不计步
+                if bar:
+                    bar.set_postfix_str(message)
+            elif current == 0 and "开始" in message:
                 if bar:
                     bar.set_postfix_str(message)
             elif "完成" in message:
@@ -134,22 +148,22 @@ def main() -> None:
     parser.add_argument(
         "--font-normal",
         default=None,
-        help="正文字体名（西文 latin；不指定时按系统语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
+        help="正文字体名（西文 latin；不指定时按 OCR 内容语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
     )
     parser.add_argument(
         "--font-bold",
         default=None,
-        help="标题/强调字体名（西文 latin；不指定时按系统语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+        help="标题/强调字体名（西文 latin；不指定时按 OCR 内容语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
     )
     parser.add_argument(
         "--font-ea-normal",
         default=None,
-        help="正文东亚字体名（不指定时按系统语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
+        help="正文东亚字体名（不指定时按 OCR 内容语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
     )
     parser.add_argument(
         "--font-ea-bold",
         default=None,
-        help="标题/强调东亚字体名（不指定时按系统语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+        help="标题/强调东亚字体名（不指定时按 OCR 内容语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
     )
     parser.add_argument(
         "--text-lang",
@@ -186,13 +200,30 @@ def main() -> None:
     )
     parser.add_argument(
         "--slide-size-mode",
-        default="widescreen",
-        choices=["widescreen", "native"],
+        default="auto",
+        choices=["auto", "widescreen", "native"],
         help=(
             "PPT 页面尺寸模式："
-            "widescreen=固定 16:9，保持现有行为（默认）；"
+            "auto=按输入中占比最高的画幅自动选择（默认）；"
+            "widescreen=固定 16:9；"
             "native=单张图片场景下严格匹配输入图片尺寸，适合海报等需要 1:1 文字调整的场景"
         ),
+    )
+    parser.add_argument(
+        "--expected-pages",
+        type=int,
+        default=None,
+        help="期望页数；加载后页数不符立即退出（退出码 3），在 OCR 之前失败，避免缺页/多页还烧调用额度",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只列出页序映射并做命名健康检查，不调用 OCR、不生成文件（无需 OCR 密钥）",
+    )
+    parser.add_argument(
+        "--no-qa-report",
+        action="store_true",
+        help="不在输出旁写 <output>.qa.json（页序映射 / 每页文本块统计 / 低置信文本清单）",
     )
     parser.add_argument(
         "--run-manifest",
@@ -214,16 +245,45 @@ def main() -> None:
     from src.pipeline import run_pipeline
     from src.extract.ocr import ocr_env_setup_help, resolve_ocr_engine
     from src.input.loader import suggest_output_pptx_path
-    from src.utils.fonts import default_fonts
 
-    # 字体：未显式指定则按系统语言自适应
-    _dl_normal, _dl_bold, _dea_normal, _dea_bold = default_fonts()
-    font_normal = args.font_normal or _dl_normal
-    font_bold = args.font_bold or _dl_bold
-    font_ea_normal = args.font_ea_normal or _dea_normal
-    font_ea_bold = args.font_ea_bold or _dea_bold
+    # 字体：未显式指定的项由 pipeline 在 OCR 后按「内容语言」自适应（中文→腾讯字体，英文→TencentSans）
+    font_normal = args.font_normal
+    font_bold = args.font_bold
+    font_ea_normal = args.font_ea_normal
+    font_ea_bold = args.font_ea_bold
 
     raw_input = args.input.strip()
+
+    # --dry-run：只列页序映射 + 命名健康检查 + 页数校验，不调 OCR、不需要密钥
+    if args.dry_run:
+        from src.input.loader import is_http_url, list_input_labels, naming_warnings
+
+        if is_http_url(raw_input):
+            print("--dry-run 暂不支持 URL 输入（需本地下载后才能数页）。", file=sys.stderr)
+            sys.exit(2)
+        try:
+            labels = list_input_labels(Path(raw_input))
+        except (ValueError, FileNotFoundError, ImportError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(2)
+        print(f"页序映射（共 {len(labels)} 页）:")
+        for i, label in enumerate(labels, start=1):
+            print(f"  第 {i:>2} 页 ← {label}")
+        warnings = naming_warnings(labels) if len(labels) >= 2 else []
+        for warn in warnings:
+            print(f"[命名警告] {warn}")
+        if args.expected_pages is not None and len(labels) != args.expected_pages:
+            print(
+                f"页数校验失败：期望 {args.expected_pages} 页，实际 {len(labels)} 页。",
+                file=sys.stderr,
+            )
+            sys.exit(3)
+        if args.expected_pages is not None:
+            print(f"页数校验通过：{len(labels)}/{args.expected_pages}")
+        if not warnings:
+            print("命名检查通过：未发现混合命名 / 编号缺口 / 编号重复。")
+        return
+
     if args.output:
         pptx_path = Path(args.output)
     else:
@@ -237,13 +297,16 @@ def main() -> None:
         sys.exit(2)
 
     print(f"开始处理… OCR 引擎: {selected_engine}")
-    print(f"字体: latin={font_normal}/{font_bold}  ea={font_ea_normal}/{font_ea_bold}")
+    if all([font_normal, font_bold, font_ea_normal, font_ea_bold]):
+        print(f"字体: latin={font_normal}/{font_bold}  ea={font_ea_normal}/{font_ea_bold}")
+    else:
+        print("字体: 未显式指定的项将按 OCR 内容语言自适应（中文→腾讯字体 W3/W7，英文→TencentSans W3/W7）")
 
     manifest_path = Path(args.run_manifest).expanduser() if args.run_manifest else None
     started_at = _update_manifest_section(manifest_path, status="running", output=pptx_path)
 
     try:
-        run_pipeline(
+        qa = run_pipeline(
             raw_input,
             pptx_path,
             font_normal=font_normal,
@@ -258,8 +321,21 @@ def main() -> None:
             ocr_engine=args.ocr_engine,
             pdf_output_path=args.pdf_output,
             slide_size_mode=args.slide_size_mode,
+            expected_pages=args.expected_pages,
+            qa_report=not args.no_qa_report,
             progress_callback=None if args.quiet else _progress_callback_with_bar(),
         )
+    except ValueError as e:
+        # 参数/输入类错误（含 --expected-pages 页数校验失败）：不打印堆栈，退出码 3
+        _update_manifest_section(
+            manifest_path,
+            status="failed",
+            output=pptx_path,
+            error=f"ValueError: {e}",
+            started_at=started_at,
+        )
+        print(str(e), file=sys.stderr)
+        sys.exit(3)
     except Exception as e:  # noqa: BLE001 - 失败也要写回 manifest
         _update_manifest_section(
             manifest_path,
@@ -277,6 +353,21 @@ def main() -> None:
         started_at=started_at,
     )
     print(f"已生成: {pptx_path}")
+    if qa:
+        s = qa.get("summary", {})
+        print(
+            "QA 摘要: "
+            f"页数 {qa.get('page_count')}，"
+            f"文本块 {s.get('rendered_blocks', 0)} 个可编辑"
+            f"（另 {s.get('kept_in_background_blocks', 0)} 个保留在背景图），"
+            f"低置信文本 {s.get('low_confidence_blocks', 0)} 个"
+        )
+        low_conf_pages = [p for p in qa.get("pages", []) if p.get("low_confidence_blocks")]
+        for p in low_conf_pages[:5]:
+            samples = "、".join(b["text"][:20] for b in p["low_confidence_blocks"][:3])
+            print(f"  第 {p['page']} 页低置信文本: {samples}")
+        if len(low_conf_pages) > 5:
+            print(f"  …另有 {len(low_conf_pages) - 5} 页存在低置信文本，详见 qa.json")
     if manifest_path is not None:
         print(f"已更新 run-manifest: {manifest_path}")
 

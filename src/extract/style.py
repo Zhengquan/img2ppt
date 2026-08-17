@@ -185,7 +185,8 @@ def infer_styles(
 ) -> List[dict]:
     """
     对 OCR 结果做样式推断，返回带样式的文本块列表。
-    每项: {"box": [[x,y],...], "text": str, "bold": bool, "color": (r,g,b), "font_size_pt": float, "precise_poly": [...]}
+    每项: {"box": [[x,y],...], "text": str, "bold": bool, "color": (r,g,b), "font_size_pt": float, "precise_poly": [...], "ocr_score": float}
+    ocr_score 为 OCR 引擎给出的置信度（0~1），无置信度信息时默认为 1.0；供 QA 报告识别低置信文本。
     """
     if isinstance(img, Image.Image):
         arr = np.array(img.convert("RGB"))
@@ -221,6 +222,12 @@ def infer_styles(
         font_size_pt = _height_to_pt(
             heights_glyph[i], float(img_h), slide_height_pt, font_pt_min, font_pt_max
         )
+        score = 1.0
+        if len(ocr_result[i]) >= 3:
+            try:
+                score = float(ocr_result[i][2])
+            except (TypeError, ValueError):
+                score = 1.0
         out.append({
             "box": boxes[i],
             "text": texts[i],
@@ -228,5 +235,6 @@ def infer_styles(
             "color": colors[i],
             "font_size_pt": font_size_pt,
             "precise_poly": precise_polys[i],
+            "ocr_score": score,
         })
     return out

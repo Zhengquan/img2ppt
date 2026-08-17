@@ -40,6 +40,16 @@ from typing import List, Optional, Tuple
 # 项目符号字符集合（无序列表）
 _BULLET_CHARS = "•●■▶◆◇○◯◦·*‣⁃▪▫►▸▹◾◽-—–"
 
+# 圆点类项目符号：这类符号会转为 PPT 原生 bullet（buChar + 悬挂缩进）渲染，
+# 而不是保留在背景图。原生 bullet 与正文同字体同字号，永远不会错位/压字。
+_DOT_BULLET_CHARS = "•●◦·‣⁃▪▫‧・"
+
+# OCR 常把圆点误识别为普通标点（. , ， 、），行首命中时也按圆点 bullet 处理
+_OCR_DOT_BULLET_CHARS = _DOT_BULLET_CHARS + ".,，、"
+
+# 原生 bullet 统一渲染为该字符（原图中的 ●/·/◦ 等归一为 •）
+_NATIVE_BULLET_CHAR = "•"
+
 # 带圈数字（① ~ ⑳ 等）
 _CIRCLED_DIGIT_RANGES = [
     ("\u2460", "\u2473"),  # ① ~ ⑳
@@ -53,8 +63,24 @@ _TRAILING_LIST_PUNCT = ".．。、)）]］>>》】"
 # 罗马数字（小写 / 大写）
 _ROMAN_RE = re.compile(r"^[ivxlcdmIVXLCDM]{1,4}$")
 
-# 阿拉伯数字编号：1 / 1. / 1) / 01 / 02 / 03 / (1) 等
-_NUMERIC_LIST_RE = re.compile(r"^[\(（【\[]?\d{1,3}[\)）】\]\.．、]?$")
+# 阿拉伯数字编号：1 / 1. / 1) / 01 / 02 / 03 / (1) 等。
+# 不能把任意裸 2~3 位数当作序号：信息图中 144、579、150、1000 等业务数值
+# 往往是独立 OCR 块；若跳过渲染会残留在底图，再与可编辑文本叠字。
+_NUMERIC_LIST_RE = re.compile(
+    r"^(?:"
+    r"[\(（【\[]?\d{1,3}[\)）】\]\.．、]"  # 带明确尾标点/括号
+    r"|0\d{1,2}"                              # 01 / 002 等前导零编号
+    r"|\d"                                     # 单数字编号
+    r")$"
+)
+
+# 信息图中的 SKU、价格、计量值通常独立成框，OCR 对这些短块常只识别出
+# 数字或数字+单位；若把它们去字后再由 PPT 重排，最容易出现截断、错位。
+# 默认保留这类视觉数值在底图中，优先保证版式保真。
+_VISUAL_NUMERIC_RE = re.compile(
+    r"^[¥￥]?\d[\d,]*(?:\.\d+)?[+＋]?(?:C|元|万元|亿元|亿|万|%|％|份|个|年|月|天|次|倍)?$",
+    re.IGNORECASE,
+)
 
 # 中文数字编号：一 / 二 / 三 / 一、 / （一） 等
 _CHINESE_NUM_RE = re.compile(
@@ -119,32 +145,31 @@ _OCR_BULLET_PREFIX_RE = re.compile(
 )
 
 
-def _split_list_prefix_text(text: str) -> Tuple[str, int]:
-    """剥离行首列表前缀，返回 (剥离后的正文, 前缀结束下标)。
+def _split_list_prefix_text(text: str) -> Tuple[str, int, str]:
+    """剥离行首列表前缀，返回 (剥离后的正文, 前缀结束下标, 前缀原文)。
 
-    若未命中前缀，返回 (原文本, 0)。前缀结束下标用于把 bbox 左边界右移，
-    只抹除/重写正文区域，保留原图里的项目符号或数字圆点。
+    若未命中前缀，返回 (原文本, 0, "")。
     """
     if not text:
-        return text, 0
+        return text, 0, ""
     # 0) OCR 误识别的项目符号（行首 "." / "·" / "," 等 + 中文正文）
     m = _OCR_BULLET_PREFIX_RE.match(text)
     if m:
         rest = text[m.end():].lstrip()
         if rest:
-            return rest, m.end()
+            return rest, m.end(), text[: m.end()]
     # 1) 标号 + 空白 + 正文
     m = _LIST_PREFIX_WITH_SPACE_RE.match(text)
     if m:
         rest = text[m.end():].lstrip()
         if rest:
-            return rest, m.end()
+            return rest, m.end(), text[: m.end()]
     # 2) 标号 + 显式标点 (1./1)/(1)/一、 等)，后面可有可无空白
     m = _LIST_PREFIX_PUNCT_RE.match(text)
     if m:
         rest = text[m.end():].lstrip()
         if rest:
-            return rest, m.end()
+            return rest, m.end(), text[: m.end()]
     # 3) 纯数字 + 紧贴中文标题：'01对接信随行' -> '对接信随行'
     m = _LIST_PREFIX_DIGIT_CN_RE.match(text)
     if m:
@@ -152,8 +177,28 @@ def _split_list_prefix_text(text: str) -> Tuple[str, int]:
         # 黑名单保护：紧跟的首个中文是常见量词/日期单位时，不剥离
         # 例：'1月份的工作' / '2年后' / '3次会议' 都不被剥离
         if rest and rest[0] not in _DIGIT_FOLLOW_BLACKLIST:
-            return rest.lstrip(), m.end()
-    return text, 0
+            return rest.lstrip(), m.end(), text[: m.end()]
+    return text, 0, ""
+
+
+def _is_dot_bullet_prefix(prefix_text: str) -> bool:
+    """判断剥离出的列表前缀是否为"圆点类"符号（含 OCR 误识别的 . , ， 、）。
+
+    圆点类前缀会转为 PPT 原生 bullet 渲染；数字/中文数字/箭头等装饰性
+    标号返回 False，保持"保留背景"的旧行为（它们通常是设计字体，重写会变形）。
+    """
+    s = (prefix_text or "").strip()
+    if not s:
+        return False
+    return all(ch in _OCR_DOT_BULLET_CHARS for ch in s)
+
+
+def _is_dot_bullet_marker(text: str) -> bool:
+    """判断整段文本是否为孤立的圆点类项目符号（长度 ≤ 3，全为圆点字符）。"""
+    s = (text or "").strip()
+    if not s or len(s) > 3:
+        return False
+    return all(ch in _DOT_BULLET_CHARS for ch in s)
 
 
 def _strip_list_prefix(text: str) -> str:
@@ -252,13 +297,18 @@ def _should_keep_in_background(text: str) -> bool:
     只覆盖"整块本身就是视觉元素"的场景：
     - 孤立列表标号 / 项目符号（"01"、"•"、"①"、"一、" 等）
     - 图标内装饰字符（"C"、"Y"、"</>"、"品" 等）
+    - SKU、价格、数量等独立视觉数值（如 "1500C"、"75元"、"1,000+份"）
 
     注意："标号 + 正文"同块时，不应整块保留；应只保留标号区域，正文继续转为可编辑文字。
     """
     s = (text or "").strip()
     if not s:
         return False
-    return _is_list_marker(s) or _is_icon_glyph(s)
+    return (
+        _is_list_marker(s)
+        or _is_icon_glyph(s)
+        or bool(_VISUAL_NUMERIC_RE.match(s))
+    )
 
 
 def _shift_block_left(blk: dict, prefix_len: int) -> dict:
@@ -293,16 +343,61 @@ def _shift_block_left(blk: dict, prefix_len: int) -> dict:
     return nb
 
 
+def _find_bullet_pair_target(
+    marker_box: List[List[float]],
+    candidates: List[dict],
+) -> Optional[int]:
+    """为孤立圆点块找右侧同行的正文块，返回 candidates 下标；找不到返回 None。
+
+    配对条件：y 中心差 ≤ 0.6 × 较小高度（同行），正文块在圆点右侧，
+    水平间隙 ≤ 1.2 × 圆点高度（圆点与正文之间的正常间隙）。
+    """
+    mx0, my0, mx1, my1 = _box_bounds(marker_box)
+    mh = max(1.0, my1 - my0)
+    mcy = (my0 + my1) / 2.0
+    best_idx: Optional[int] = None
+    best_gap: Optional[float] = None
+    for idx, blk in enumerate(candidates):
+        if blk.get("_skip_render") or blk.get("_bullet_char"):
+            continue
+        text = (blk.get("text") or "").strip()
+        box = blk.get("box")
+        if not text or not box:
+            continue
+        x0, y0, x1, y1 = _box_bounds(box)
+        h = max(1.0, y1 - y0)
+        cy = (y0 + y1) / 2.0
+        if abs(cy - mcy) > 0.6 * min(h, mh):
+            continue
+        gap = x0 - mx1
+        if gap < -0.5 * mh:  # 允许轻微重叠，但正文不能整体在圆点左侧
+            continue
+        if gap > 1.2 * mh:
+            continue
+        if best_gap is None or gap < best_gap:
+            best_gap = gap
+            best_idx = idx
+    return best_idx
+
+
 def mark_background_blocks(blocks: List[dict]) -> List[dict]:
     """在【去字重建之前】处理列表/图标视觉元素。
 
-    - 孤立标号、项目符号、图标字符：打 `_skip_render=True`，去字和导出都跳过，原样保留。
-    - "标号 + 正文"同块：剥离标号前缀、右移 bbox 左边界，只抹除并重写正文区域；
-      同时打 `_no_merge=True`，避免列表项被合并。
+    圆点类项目符号（• · ● ◦ 等，含 OCR 误识别的 . , ， 、）→ **PPT 原生 bullet**：
+    - "圆点 + 正文"同块：剥离圆点，整块抹除重写，正文块打 `_bullet_char`；
+    - 孤立圆点块：与右侧同行正文块配对——正文块 bbox 左扩到圆点处、打 `_bullet_char`，
+      圆点块打 `_skip_render + _erase_only`（从背景抹除但不渲染）；
+      配对失败时退回旧行为（保留背景）。
+
+    其它标号（数字 01、带圈数字、中文数字、箭头等装饰性标号）保持旧行为：
+    - 孤立标号 / 图标字符：`_skip_render=True`，原样保留在背景图；
+    - "标号 + 正文"同块：剥离前缀、右移 bbox，只抹除/重写正文区域。
 
     返回新列表（不修改入参）。
     """
     out: List[dict] = []
+    dot_marker_idxs: List[int] = []  # out 中孤立圆点块的下标
+
     for blk in blocks:
         if blk.get("_skip_render"):
             out.append(blk)
@@ -311,19 +406,54 @@ def mark_background_blocks(blocks: List[dict]) -> List[dict]:
         if not text:
             out.append(blk)
             continue
+        # 孤立圆点符号：先登记，第二趟配对
+        if _is_dot_bullet_marker(text) and blk.get("box"):
+            nb = dict(blk)
+            nb["_skip_render"] = True
+            dot_marker_idxs.append(len(out))
+            out.append(nb)
+            continue
         if _should_keep_in_background(text):
             nb = dict(blk)
             nb["_skip_render"] = True
             out.append(nb)
             continue
-        stripped, prefix_len = _split_list_prefix_text(text)
+        stripped, prefix_len, prefix_text = _split_list_prefix_text(text)
         if prefix_len > 0 and stripped and stripped != text:
-            nb = _shift_block_left(blk, prefix_len)
-            nb["text"] = stripped
-            nb["_no_merge"] = True
-            out.append(nb)
+            if _is_dot_bullet_prefix(prefix_text):
+                # 圆点 + 正文同块 → 原生 bullet：整块抹除重写，不右移 bbox
+                nb = dict(blk)
+                nb["text"] = stripped
+                nb["_bullet_char"] = _NATIVE_BULLET_CHAR
+                nb["_no_merge"] = True
+                out.append(nb)
+            else:
+                nb = _shift_block_left(blk, prefix_len)
+                nb["text"] = stripped
+                nb["_no_merge"] = True
+                out.append(nb)
             continue
         out.append(blk)
+
+    # 第二趟：孤立圆点与右侧同行正文配对
+    for m_idx in dot_marker_idxs:
+        marker = out[m_idx]
+        target_idx = _find_bullet_pair_target(marker["box"], out)
+        if target_idx is None:
+            continue  # 配对失败：保留背景（旧行为）
+        target = dict(out[target_idx])
+        mx0, my0, mx1, my1 = _box_bounds(marker["box"])
+        tx0, ty0, tx1, ty1 = _box_bounds(target["box"])
+        # 渲染 bbox 左扩到圆点左缘（文本框含 bullet 悬挂缩进区），
+        # precise_poly 保持原正文区域用于去字；圆点区域由 marker 块自己抹除
+        target["box"] = _rect_to_box(min(mx0, tx0), ty0, tx1, ty1)
+        target["_bullet_char"] = _NATIVE_BULLET_CHAR
+        target["_no_merge"] = True
+        out[target_idx] = target
+        marker = dict(marker)
+        marker["_erase_only"] = True  # 圆点从背景抹除（已由原生 bullet 接管渲染）
+        out[m_idx] = marker
+
     return out
 
 
@@ -351,7 +481,7 @@ def _split_list_markers(blocks: List[dict]) -> Tuple[List[dict], List[dict]]:
             new_blk["_skip_render"] = True
             skipped.append(new_blk)
             continue
-        stripped, prefix_len = _split_list_prefix_text(text)
+        stripped, prefix_len, _prefix_text = _split_list_prefix_text(text)
         if prefix_len > 0 and stripped and stripped != text:
             new_blk = _shift_block_left(blk, prefix_len)
             new_blk["text"] = stripped
@@ -670,7 +800,13 @@ def merge_vertical_paragraphs(
     if not styled_blocks:
         return list(styled_blocks)
 
-    # 先剔除"列表标号 / 项目符号"，不参与段落合并
+    # 在剔除列表标号之前，先记录它们的 y 位置。项目符号本身会保留在
+    # 背景图中，因此不能参与文本合并；但它恰好也是列表项之间最可靠的
+    # 视觉边界。若直接剔除，连续的同样式列表正文会被误合并成一个多行
+    # 文本框，继而出现跨项目换行、挤压或叠字。
+    list_marker_dividers = _list_marker_dividers(styled_blocks)
+
+    # 再剔除列表标号 / 项目符号，不参与段落合并
     remaining, list_marker_skipped = _split_list_markers(list(styled_blocks))
 
     # 拆分可合并 vs 透传
@@ -708,6 +844,9 @@ def merge_vertical_paragraphs(
         enriched,
         section_gap_ratio=section_gap_ratio,
     )
+    # 列表标号与通用区域分隔线共同构成硬边界。去重、排序可避免同一
+    # 标号被 OCR 拆成多个小块时反复扫描。
+    section_dividers = sorted(set(section_dividers + list_marker_dividers))
 
     # 按 x0 粗聚类 + y0 升序；左对齐聚类后再按垂直顺序扫描
     enriched.sort(key=lambda e: (round(e["x0"] / 4), e["y0"]))
@@ -724,7 +863,9 @@ def merge_vertical_paragraphs(
 
     def _crosses_divider(y_top: float, y_bot: float) -> bool:
         for dy in section_dividers:
-            if y_top < dy < y_bot:
+            # 列表标号顶部通常与下一项正文 y0 重合，故下边界使用
+            # <=；否则会在“刚好齐平”时漏掉分隔，继续跨项目合并。
+            if y_top < dy <= y_bot:
                 return True
         return False
 
@@ -794,6 +935,24 @@ def merge_vertical_paragraphs(
 
     # 透传块追加在末尾，保序；列表标号块带 _skip_render=True 一并附加
     return merged + passthrough + list_marker_skipped
+
+
+def _list_marker_dividers(styled_blocks: List[dict]) -> List[float]:
+    """返回孤立列表标号的顶部 y 坐标，供段落合并作为硬分隔。
+
+    仅使用真正的列表标号，避免图标、SKU 等同样被保留在背景中的元素
+    误把无关正文切断。标号顶部通常与其所属正文首行齐平，因此它不会
+    阻碍该项目内部的后续续行；但会阻止上一个项目跨越此处合并到本项。
+    """
+    dividers: List[float] = []
+    for blk in styled_blocks:
+        text = (blk.get("text") or "").strip()
+        box = blk.get("box")
+        if not box or not _is_list_marker(text):
+            continue
+        _, y0, _, _ = _box_bounds(box)
+        dividers.append(y0)
+    return dividers
 
 
 def _detect_section_dividers(

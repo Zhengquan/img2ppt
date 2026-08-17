@@ -241,8 +241,10 @@ def reconstruct_background(
 
     polys = []
     for b in styled_blocks:
-        # 标记为保留原图的块（列表标号 / 项目符号 / 图标字符）不抹除，原样留在背景图
-        if b.get("_skip_render"):
+        # 标记为保留原图的块（列表标号 / 图标字符）不抹除，原样留在背景图；
+        # 但 _erase_only 块例外（孤立圆点已转为 PPT 原生 bullet 渲染，
+        # 原图上的圆点必须抹除，否则与原生 bullet 重影）。
+        if b.get("_skip_render") and not b.get("_erase_only"):
             continue
         if b.get("precise_poly"):
             polys.append(b["precise_poly"])

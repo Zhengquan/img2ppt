@@ -20,4 +20,5 @@ build/
 .cursor/
 pkgs/
 .codebuddy
-tmp/
+tmp/output/
+output/
