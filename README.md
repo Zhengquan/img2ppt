@@ -90,7 +90,7 @@ pip install -r requirements.txt --index-url https://pypi.org/simple
 2. 去文字化（**设计语义分层重建**：纯色/渐变重绘，复杂纹理用近似色填充，不加载任何 inpainting 模型）
 3. 使用 **banana-slides** 的 [PPTXBuilder](https://github.com/Anionex/banana-slides) 在无字底图上按 bbox 放置可编辑文本框并导出 .pptx
 
-字体默认同时写入「西文」与「东亚（中文）」两套名字，未显式指定时**按 OCR 识别出的内容语言自适应**：中文内容 → `腾讯字体 W3/W7`，英文内容 → `TencentSans W3/W7`（不受运行 shell 的 locale 影响），确保 Windows / macOS、中英文系统均能命中；若系统未安装，可经 `--font-normal` / `--font-bold` / `--font-ea-normal` / `--font-ea-bold` 改为其他字体（如思源黑体）。同时每个文本 run 默认写入 `lang="zh-CN"` 与 `altLang="en-US"`，避免英文环境下 PPT/WPS 将中文误判为英文而打出拼写检查红色波浪线。
+字体默认统一使用英文名 `TencentSans W3`（正文）/ `TencentSans W7`（加粗/标题），latin 与东亚字体字段均写此名。该字体同时含拉丁与 CJK 字形，英文名在 macOS / Windows / Linux 的 fontconfig 中注册最稳定（避免中文名「腾讯字体 W3」在某些系统上命中失败）；若系统未安装，可经 `--font-normal` / `--font-bold` / `--font-ea-normal` / `--font-ea-bold` 改为其他字体（如思源黑体）。同时每个文本 run 默认写入 `lang="zh-CN"` 与 `altLang="en-US"`，避免英文环境下 PPT/WPS 将中文误判为英文而打出拼写检查红色波浪线。
 
 ## 与 banana-slides 的复用
 

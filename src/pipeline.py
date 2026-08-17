@@ -209,7 +209,7 @@ def run_pipeline(
     - output_path: 输出的 .pptx 路径
     - pdf_output_path: 当 input_path 为目录时，可选输出合并后的 PDF 路径；不传则默认与 ppt 同名 .pdf
     - font_normal/font_bold/font_ea_normal/font_ea_bold: 为 None 时按 **OCR 识别出的内容语言** 自适应
-      （中文内容→腾讯字体 W3/W7；英文内容→TencentSans W3/W7；无文本时回退系统语言）。
+      （统一使用英文名 TencentSans W3/W7，该字体含 CJK 字形，跨平台 fontconfig 注册最稳定）。
       比纯按系统语言更稳：Agent/CI 的 shell 常无中文 locale，纯按系统语言会把中文 deck 错配成西文字体。
     - expected_pages: 可选，期望页数；加载后页数不符立即抛 ValueError（在 OCR 之前失败，不烧调用额度）。
     - qa_report: 默认在输出旁写 <output>.qa.json（页序映射、每页文本块统计、低置信文本清单）。
@@ -286,9 +286,8 @@ def run_pipeline(
             page_qa["label"] = labels[i] if i < len(labels) else f"page-{i + 1}"
             qa_pages.append(page_qa)
 
-        # 字体兜底推迟到 OCR 之后：未显式指定的项按识别出的内容语言自适应
-        # （中文内容→腾讯字体 W3/W7；英文内容→TencentSans W3/W7），
-        # 避免 Agent/CI shell 无中文 locale 时把中文 deck 错配成西文字体。
+        # 字体兜底推迟到 OCR 之后：未显式指定的项用默认英文名 TencentSans W3/W7
+        # （含 CJK 字形，跨平台 fontconfig 注册最稳定）。
         if not (font_normal and font_bold and font_ea_normal and font_ea_bold):
             sample_text = " ".join(
                 (b.get("text") or "")

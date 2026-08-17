@@ -1,10 +1,16 @@
 """默认字体挑选。
 
 策略：
-- `default_fonts_for_text`（优先）：按 OCR 识别出的文本内容语言选择——
-  中文内容 → `腾讯字体 W3/W7`；英文内容 → `TencentSans W3/W7`。
-  不受运行 shell 的 locale 影响（Agent/CI 常无中文 locale）。
-- `default_fonts`（回退）：无文本可判定时按系统语言环境选择。
+- 统一使用英文字体名 `TencentSans W3/W7` 作为 latin 与东亚字体名。
+  腾讯字体在不同系统上注册名不一致（中文名「腾讯字体 W3」/「腾讯体 W3」/
+  英文名「TencentSans W3」），而 python-pptx 写入的 typeface 必须与目标
+  机器已安装的字体族名精确匹配才能命中。英文名 `TencentSans W3/W7` 在
+  macOS / Windows / Linux 的 fontconfig 中均作为主名注册（fc-list 输出
+  `TencentSans,腾讯体,TencentSans W3,腾讯体 W3`），兼容性最好。
+- `default_fonts_for_text`（优先）：按 OCR 识别出的文本内容语言决定是否
+  同时写入中文别名——但 latin/ea 字段统一用英文名，避免跨平台命中失败。
+  目前简化为始终用 `TencentSans W3/W7`（该字体本身含 CJK 字形）。
+- `default_fonts`（回退）：无文本可判定时同上。
 
 调用方在 CLI/API 层若用户未显式指定字体，才使用这里的默认值。
 """
@@ -13,6 +19,12 @@ from __future__ import annotations
 import locale
 import os
 from typing import Tuple
+
+
+# 腾讯字体的统一英文名（fc-list 在 macOS/Linux 上注册的主名）。
+# 该字体同时包含拉丁与 CJK 字形，latin 与 ea 字段均用此名即可。
+_FONT_NORMAL = "TencentSans W3"
+_FONT_BOLD = "TencentSans W7"
 
 
 def _detect_system_lang() -> str:
@@ -37,35 +49,18 @@ def _detect_system_lang() -> str:
 def default_fonts() -> Tuple[str, str, str, str]:
     """返回 (font_normal, font_bold, font_ea_normal, font_ea_bold)。
 
-    - 中文环境：latin + ea 都用 `腾讯字体 W3/W7`
-    - 英文/其他环境：latin + ea 都用 `TencentSans W3/W7`
+    统一使用英文字体名 `TencentSans W3/W7`（含 CJK 字形），
+    确保 macOS / Windows / Linux 跨平台均能命中已安装的腾讯字体。
     """
-    lang = _detect_system_lang()
-    is_chinese = lang.startswith("zh")
-    if is_chinese:
-        normal = "腾讯字体 W3"
-        bold = "腾讯字体 W7"
-    else:
-        normal = "TencentSans W3"
-        bold = "TencentSans W7"
-    return normal, bold, normal, bold
+    return _FONT_NORMAL, _FONT_BOLD, _FONT_NORMAL, _FONT_BOLD
 
 
 def default_fonts_for_text(text: str) -> Tuple[str, str, str, str]:
-    """按识别出的文本内容选择默认字体族（比系统语言更贴近幻灯片实际内容）。
+    """按识别出的文本内容选择默认字体族。
 
-    - CJK 字符占主导 → `腾讯字体 W3/W7`（中文幻灯片，即使进程 LANG 非中文也正确）
-    - 否则 → `TencentSans W3/W7`
-    - 文本为空 → 回退到系统语言判定 `default_fonts()`
+    目前统一返回 `TencentSans W3/W7`（该字体同时含拉丁与 CJK 字形，
+    英文名在跨平台 fontconfig 中注册最稳定）。
 
-    背景：Agent / CI 等非交互 shell 常无中文 locale（LANG=C/en_US），
-    纯按系统语言会把中文 deck 的东亚字体错配成 TencentSans。
+    保留 text 参数与函数签名，便于未来按内容语言切换不同字体族时扩展。
     """
-    if not (text or "").strip():
-        return default_fonts()
-    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-    latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
-    is_chinese = cjk >= 8 and cjk * 2 >= latin
-    if is_chinese:
-        return "腾讯字体 W3", "腾讯字体 W7", "腾讯字体 W3", "腾讯字体 W7"
-    return "TencentSans W3", "TencentSans W7", "TencentSans W3", "TencentSans W7"
+    return _FONT_NORMAL, _FONT_BOLD, _FONT_NORMAL, _FONT_BOLD

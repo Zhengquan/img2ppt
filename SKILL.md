@@ -125,7 +125,7 @@ pip install -r requirements.txt
 - `--dry-run`：只列页序映射 + 命名检查，不调 OCR、不生成文件
 - `--expected-pages N`：期望页数校验，不符退出码 `3`（在 OCR 之前失败）
 - `--no-qa-report`：关闭 QA 报告输出（默认在输出旁写 `<output>.qa.json`，含页序映射、每页文本块统计、低置信文本清单）
-- `--font-normal` / `--font-bold`：西文（latin）正文 / 强调字体；不指定时按 **OCR 识别出的内容语言**自适应（中文内容→`腾讯字体 W3/W7`，英文内容→`TencentSans W3/W7`），不受运行 shell 的 locale 影响
+- `--font-normal` / `--font-bold`：西文（latin）正文 / 强调字体；不指定时默认 `TencentSans W3` / `TencentSans W7`（英文名，跨平台 fontconfig 注册最稳定；该字体含 CJK 字形，中文 deck 同样适用）
 - `--font-ea-normal` / `--font-ea-bold`：东亚（中文）正文 / 强调字体（自适应规则同上），Windows/中文 WPS 下决定中文实际显示字体
 - `--text-lang` / `--text-alt-lang`：文本 run 的主/副语言标签（默认 `zh-CN` / `en-US`），避免英文环境下中文被打上拼写检查的红色波浪线
 - `--text-pad-ratio`：文本框向右扩宽比例（默认 `0.08`，防止贴边折行；`0` 关闭扩宽）

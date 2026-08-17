@@ -148,22 +148,22 @@ def main() -> None:
     parser.add_argument(
         "--font-normal",
         default=None,
-        help="正文字体名（西文 latin；不指定时按 OCR 内容语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
+        help="正文字体名（西文 latin；不指定时默认 TencentSans W3）",
     )
     parser.add_argument(
         "--font-bold",
         default=None,
-        help="标题/强调字体名（西文 latin；不指定时按 OCR 内容语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+        help="标题/强调字体名（西文 latin；不指定时默认 TencentSans W7）",
     )
     parser.add_argument(
         "--font-ea-normal",
         default=None,
-        help="正文东亚字体名（不指定时按 OCR 内容语言自适应：中文→腾讯字体 W3，英文→TencentSans W3）",
+        help="正文东亚字体名（不指定时默认 TencentSans W3，含 CJK 字形）",
     )
     parser.add_argument(
         "--font-ea-bold",
         default=None,
-        help="标题/强调东亚字体名（不指定时按 OCR 内容语言自适应：中文→腾讯字体 W7，英文→TencentSans W7）",
+        help="标题/强调东亚字体名（不指定时默认 TencentSans W7）",
     )
     parser.add_argument(
         "--text-lang",
@@ -246,7 +246,7 @@ def main() -> None:
     from src.extract.ocr import ocr_env_setup_help, resolve_ocr_engine
     from src.input.loader import suggest_output_pptx_path
 
-    # 字体：未显式指定的项由 pipeline 在 OCR 后按「内容语言」自适应（中文→腾讯字体，英文→TencentSans）
+    # 字体：未显式指定的项由 pipeline 在 OCR 后用默认英文名 TencentSans W3/W7（含 CJK 字形）
     font_normal = args.font_normal
     font_bold = args.font_bold
     font_ea_normal = args.font_ea_normal
@@ -300,7 +300,7 @@ def main() -> None:
     if all([font_normal, font_bold, font_ea_normal, font_ea_bold]):
         print(f"字体: latin={font_normal}/{font_bold}  ea={font_ea_normal}/{font_ea_bold}")
     else:
-        print("字体: 未显式指定的项将按 OCR 内容语言自适应（中文→腾讯字体 W3/W7，英文→TencentSans W3/W7）")
+        print("字体: 未显式指定的项将使用默认 TencentSans W3/W7（含 CJK 字形）")
 
     manifest_path = Path(args.run_manifest).expanduser() if args.run_manifest else None
     started_at = _update_manifest_section(manifest_path, status="running", output=pptx_path)
